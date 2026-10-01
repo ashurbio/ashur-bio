@@ -1,0 +1,7 @@
+node_modules/
+shots*/
+*.png
+*.json
+!package.json
+lh*.html
+__pycache__/
