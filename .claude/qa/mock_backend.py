@@ -92,15 +92,19 @@ class MockBackend:
         self.calls = []
         self.join_code = "ASHUR-25"
         self.study_calls = []        # request bodies sent to study-ai
-        self.study_mode = "ok"       # ok | too_long_once | user_limit | busy_once | pace_once | daily_quota
+        self.study_mode = "ok"       # ok | too_long_once | user_limit | user_tries | busy_once | pace_once | daily_quota
         self._busy_done = False
         self._too_long_done = set()
 
     def study_ai(self, body):
         """Fake study-ai: answers in the same NDJSON stream format as the real function."""
         self.study_calls.append(body)
+        if self.study_mode == "user_tries":
+            # the per-student cap on calls (retries included), checked before anything is sent to Gemini
+            return 429, {"ok": False, "error": "user_limit", "message": "حاولت هواية مرات اليوم لأن خدمة Gemini المجانية مزدحمة. كمّل باچر.", "message_en": "Too many attempts today."}
         if self.study_mode == "user_limit":
-            return 429, {"ok": False, "error": "user_limit", "message": "خلصت حصتك اليومية (20 جزء). تكدر تكمل باچر بنفس الوقت تقريباً.", "message_en": "You've used today's limit (20 parts)."}
+            # the student's 20 parts are charged once Gemini starts answering, so this arrives in the stream
+            return 200, [{"type": "error", "code": "user_limit", "message": "خلصت حصتك اليومية (20 جزء). تكدر تكمل باچر بنفس الوقت تقريباً.", "message_en": "You've used today's limit (20 parts)."}]
         if self.study_mode == "pace_once" and not self._busy_done:
             # the function's own department-wide per-minute pacing (before anything is sent to Gemini)
             self._busy_done = True

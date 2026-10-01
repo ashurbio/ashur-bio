@@ -24,8 +24,9 @@ export function buildRequest(r: StudyRequest) {
     generationConfig: {
       maxOutputTokens: 32768,
       // Translation is close to mechanical, so it thinks little; question writing thinks more so answers get checked.
-      // (Gemini 3.8 Flash accepts LOW / MEDIUM / HIGH; MINIMAL is rejected.)
-      thinkingConfig: { thinkingLevel: study ? "MEDIUM" : "LOW" },
+      // (Gemini 3.8 Flash accepts LOW / MEDIUM / HIGH; MINIMAL is rejected.) Thought summaries are streamed (and
+      // skipped by index.ts) so a working model answers within seconds; index.ts relies on that to spot a stuck one.
+      thinkingConfig: { thinkingLevel: study ? "MEDIUM" : "LOW", includeThoughts: true },
       ...(study ? { responseMimeType: "application/json", responseJsonSchema: studySchema(r.formats) } : {}),
     },
   };

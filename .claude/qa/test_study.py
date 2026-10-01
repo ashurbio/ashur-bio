@@ -286,6 +286,15 @@ with sync_playwright() as p:
     page.wait_for_timeout(1500)
     check("student daily limit: job stops instead of retrying", len(mb.study_calls) == n0 + 1 and page.locator(".job[aria-busy=true]").count() == 0, f"{len(mb.study_calls) - n0} calls")
     page.screenshot(path=str(SHOTS / "s05_limit.png"), full_page=True)
+
+    mb.study_mode = "user_tries"
+    page.locator(".job .icon-btn").click()
+    n0 = len(mb.study_calls)
+    page.locator(".start-row .btn").click()
+    page.wait_for_selector(".job .notice.alert")
+    check("student attempts cap: clear Arabic message", "حاولت هواية مرات اليوم" in page.inner_text(".job .notice.alert"), page.inner_text(".job .notice.alert").replace("\n", " "))
+    page.wait_for_timeout(1500)
+    check("student attempts cap: job stops instead of retrying", len(mb.study_calls) == n0 + 1, f"{len(mb.study_calls) - n0} calls")
     ctx.close()
 
     # ---------- dark mode + 320 px reflow on a finished result

@@ -70,7 +70,7 @@ Deno.test("buildRequest: translate — PDF inline, low thinking, plain text", ()
   assertEquals(body.contents[0].parts[0], { inlineData: { mimeType: "application/pdf", data: PDF } });
   assertMatch((body.contents[0].parts.at(-1) as { text: string }).text, /<settings>/);
   assertMatch(body.systemInstruction.parts[0].text, /academic translator/);
-  assertEquals(body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
+  assertEquals(body.generationConfig.thinkingConfig, { thinkingLevel: "LOW", includeThoughts: true });
   assert(!("responseMimeType" in body.generationConfig));
 });
 
@@ -80,7 +80,7 @@ Deno.test("buildRequest: study — JSON schema, medium thinking, images labelled
   const g = body.generationConfig as Record<string, unknown>;
   assertEquals(g.responseMimeType, "application/json");
   assertEquals(Object.keys((g.responseJsonSchema as { properties: object }).properties), ["topic", "mcq", "notes"]);
-  assertEquals(g.thinkingConfig, { thinkingLevel: "MEDIUM" });
+  assertEquals(g.thinkingConfig, { thinkingLevel: "MEDIUM", includeThoughts: true });
   const parts = body.contents[0].parts as Record<string, unknown>[];
   assertEquals(parts[0], { text: "Image 3:" });
   assertEquals(parts[3], { inlineData: { mimeType: "image/png", data: PDF } });
@@ -135,15 +135,19 @@ Deno.test("finishProblem: finish reasons", () => {
 
 type Seen = { url: string; key: string | null; body: Record<string, any> };
 const seen: Seen[] = [];
-type Mode = "ok" | "json" | "safety" | "blocked" | "max_tokens" | "minute" | "daily" | "unavailable" | "badkey" | "slow" | "cut" | "stream_error";
+type Mode = "ok" | "json" | "safety" | "blocked" | "max_tokens" | "minute" | "daily" | "unavailable" | "badkey" | "slow" | "cut" | "stream_error"
+  | "primary_busy" | "primary_hang" | "primary_silent" | "hang" | "thinking_then_503";
 let mode: Mode = "ok";
 let denyKey = ""; // rate_hit answers false for keys starting with this
+const rateKeys: string[] = []; // every key rate_hit was asked about
 
 const sse = (chunks: unknown[]) => chunks.map((c) => `data: ${JSON.stringify(c)}\r\n\r\n`).join("");
 function answer(text: string, finishReason: string | null = "STOP") {
   const half = Math.ceil(text.length / 2);
   const chunk = (t: string, extra: Record<string, unknown> = {}) => ({ candidates: [{ content: { role: "model", parts: [{ text: t }] }, ...extra }], modelVersion: "gemini-3.8-flash" });
   return [
+    // Thought summary first, as Gemini sends with includeThoughts; it must never reach the student.
+    { candidates: [{ content: { role: "model", parts: [{ text: "**Reading the page**\nThinking...", thought: true }] } }] },
     chunk(text.slice(0, half)),
     chunk(text.slice(half), finishReason ? { finishReason } : {}),
     ...(finishReason ? [{ candidates: [], usageMetadata: { promptTokenCount: 600, candidatesTokenCount: 40, thoughtsTokenCount: 120 } }] : []),
@@ -162,21 +166,37 @@ const fake = Deno.serve({ port: 8787, onListen() {} }, async (req) => {
   if (url.pathname === "/rest/v1/profiles") return j(url.searchParams.get("id") === "eq.u1" ? { status: "active" } : { status: "disabled" });
   if (url.pathname === "/rest/v1/rpc/rate_hit") {
     const { p_key } = await req.json();
+    rateKeys.push(String(p_key));
     return j(!(denyKey && String(p_key).startsWith(denyKey)));
   }
   // --- Gemini
   if (url.pathname.startsWith("/v1beta/models/")) {
     seen.push({ url: url.pathname + url.search, key: req.headers.get("x-goog-api-key"), body: await req.json() });
     const headers = { "content-type": "text/event-stream" };
+    const primary = url.pathname.includes("gemini-3.8-flash");
+    // Gemini's real "high demand" answer
+    const overloaded = () => j({ error: { code: 503, status: "UNAVAILABLE", message: "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later." } }, 503);
+    const fallbackAnswer = () => new Response(sse(answer("--- صفحة 5 ---\nمن النموذج البديل")), { headers });
+    // Stuck in Google's queue: no answer and no error until the caller gives up.
+    // (Ends by itself after a while so the fake server can shut down.)
+    const hang = () => new Promise<Response>((resolve) => setTimeout(() => resolve(j({}, 504)), 3000));
+    // Headers, then nothing.
+    const silent = () => new Response(new ReadableStream({ start(c) { setTimeout(() => { try { c.close(); } catch { /* gone */ } }, 3000); } }), { headers });
+    if (mode === "primary_busy") return primary ? overloaded() : fallbackAnswer();
+    if (mode === "primary_hang") return primary ? hang() : fallbackAnswer();
+    if (mode === "primary_silent") return primary ? silent() : fallbackAnswer();
+    if (mode === "hang") return hang();
     switch (mode) {
       case "minute": return j(quota("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "33s"), 429);
       case "daily": return j(quota("GenerateRequestsPerDayPerProjectPerModel-FreeTier"), 429);
-      case "unavailable": return j({ error: { code: 503, status: "UNAVAILABLE", message: "The model is overloaded." } }, 503);
+      case "unavailable": return overloaded();
       case "badkey": return j({ error: { code: 400, status: "INVALID_ARGUMENT", message: "API key not valid.", details: [{ reason: "API_KEY_INVALID" }] } }, 400);
       case "safety": return new Response(sse(answer("", "SAFETY")), { headers });
       case "blocked": return new Response(sse([{ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } }]), { headers });
       case "max_tokens": return new Response(sse(answer("--- صفحة 5 ---\nنص طويل", "MAX_TOKENS")), { headers });
       case "cut": return new Response(sse(answer("--- صفحة 5 ---\nنص", null)), { headers });
+      // Seen for real under heavy load: thoughts stream, then a 503 inside the stream before any answer text.
+      case "thinking_then_503": return new Response(sse([answer("x")[0], { error: { code: 503, status: "UNAVAILABLE", message: "This model is currently experiencing high demand." } }]), { headers });
       case "stream_error": return new Response(sse([...answer("--- صفحة", null).slice(0, 1), { error: { code: 503, status: "UNAVAILABLE", message: "overloaded" } }]), { headers });
       case "slow": {
         const stream = new ReadableStream({
@@ -228,7 +248,7 @@ const last = (r: { events: Record<string, unknown>[] }) => r.events.at(-1) as Re
 const translateBody = { task: "translate", target: "ar", pieces: [{ kind: "pdf", data: PDF }], start: 5, count: 2, total: 30 };
 
 Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: false, sanitizeResources: false }, async (t) => {
-  const proc = await startFn({ AI_TIME_LIMIT_SEC: "2" });
+  const proc = await startFn({ AI_TIME_LIMIT_SEC: "2", AI_FIRST_BYTE_SEC: "0.5" });
   try {
     await t.step("rejects missing/invalid/disabled users", async () => {
       assertEquals((await call(translateBody, "nope")).status, 401);
@@ -249,16 +269,40 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals([r.status, r.json.error, r.json.retry_after], [429, "busy", 15]);
       assertEquals(seen.length, n);
     });
-    await t.step("daily limits: student and department, with Arabic messages", async () => {
-      denyKey = "ai:user:";
-      let r = await call(translateBody);
-      assertEquals([r.status, r.json.error], [429, "user_limit"]);
-      assertMatch(r.json.message, /حصتك اليومية \(20 جزء\)/);
+    await t.step("daily limits: department and student attempts stop before Gemini, with Arabic messages", async () => {
+      const n = seen.length;
       denyKey = "ai:all";
-      r = await call(translateBody);
+      let r = await call(translateBody);
       assertEquals([r.status, r.json.error], [429, "global_limit"]);
       assertMatch(r.json.message, /الحد اليومي للقسم/);
+      denyKey = "ai:try:";
+      r = await call(translateBody);
+      assertEquals([r.status, r.json.error], [429, "user_limit"]);
+      assertMatch(r.json.message, /حاولت هواية مرات اليوم/);
       denyKey = "";
+      assertEquals(seen.length, n);
+    });
+    await t.step("student's 20 parts: charged once Gemini answers, so a used-up day stops the part", async () => {
+      mode = "ok";
+      denyKey = "ai:user:";
+      const r = await call(translateBody);
+      denyKey = "";
+      assertEquals(r.status, 200);
+      assertEquals(r.events.filter((e) => e.type === "delta").length, 0); // nothing of the answer is shown
+      assertEquals(last(r).code, "user_limit");
+      assertMatch(String(last(r).message), /خلصت حصتك اليومية \(20 جزء\)/);
+    });
+    await t.step("a busy model doesn't use up the student's parts; an answered part uses one", async () => {
+      for (const m of ["unavailable", "thinking_then_503"] as const) {
+        mode = m;
+        const k = rateKeys.length;
+        assertEquals(last(await call(translateBody)).code, "busy", m);
+        assertEquals(rateKeys.slice(k), ["ai:min", "ai:all", "ai:try:u1"], m);
+      }
+      mode = "ok";
+      const k = rateKeys.length;
+      assertEquals(last(await call(translateBody)).type, "done");
+      assertEquals(rateKeys.slice(k), ["ai:min", "ai:all", "ai:try:u1", "ai:user:u1"]);
     });
     await t.step("translate streams deltas and sends the right Gemini request", async () => {
       mode = "ok";
@@ -266,7 +310,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals(r.status, 200);
       const text = r.events.filter((e) => e.type === "delta").map((e) => e.text).join("");
       assertEquals(text, "--- صفحة 5 ---\n# الخلية (Cell)");
-      assertEquals(last(r), { type: "done", stop: "STOP" });
+      assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.8-flash" });
       assert(r.events.some((e) => e.type === "status" && e.phase === "writing"));
       const req = seen.at(-1)!;
       assertEquals(req.url, "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse");
@@ -285,14 +329,43 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals(Object.keys(g.responseJsonSchema.properties), ["topic", "summary", "mcq", "notes"]);
       assertEquals(g.thinkingConfig.thinkingLevel, "MEDIUM");
     });
-    await t.step("Gemini per-minute 429 → busy with Gemini's retry delay", async () => {
+    await t.step("main model overloaded (503) → same request answered by the fallback model", async () => {
+      mode = "primary_busy";
+      const n = seen.length;
+      const r = await call(translateBody);
+      assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.5-flash" });
+      assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.5-flash"]);
+      assertEquals(seen.at(-1)!.body, seen.at(-2)!.body); // same request, only the model changes
+    });
+    await t.step("main model stuck (no answer, or headers then nothing) → fallback model after AI_FIRST_BYTE_SEC", async () => {
+      for (const m of ["primary_hang", "primary_silent"] as const) {
+        mode = m;
+        const n = seen.length;
+        const t0 = Date.now();
+        const r = await call(translateBody);
+        assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.5-flash" }, m);
+        assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.5-flash"]);
+        assert(Date.now() - t0 < 1900, `${m} should not wait for the whole time limit`);
+      }
+    });
+    await t.step("nothing answers before the time limit → busy (retry), not too_long", async () => {
+      mode = "hang";
+      const r = await call(translateBody);
+      assertEquals([last(r).code, last(r).retry_after], ["busy", 30]);
+      assertMatch(String(last(r).message), /ما ردّت بالوقت/);
+    });
+    await t.step("Gemini per-minute 429 on both models → busy with Gemini's retry delay", async () => {
       mode = "minute";
+      const n = seen.length;
       const r = await call(translateBody);
       assertEquals([last(r).code, last(r).retry_after], ["busy", 33]);
+      assertEquals(seen.length - n, 2);
     });
-    await t.step("Gemini per-day 429 → daily_quota with a clear Arabic message", async () => {
+    await t.step("Gemini per-day 429 → daily_quota with a clear Arabic message (no fallback)", async () => {
       mode = "daily";
+      const n = seen.length;
       const r = await call(translateBody);
+      assertEquals(seen.length - n, 1);
       assertEquals(last(r).code, "daily_quota");
       assertMatch(String(last(r).message), /خلصت الحصة المجانية اليومية/);
     });
@@ -316,7 +389,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       mode = "cut";
       assertEquals(last(await call(translateBody)).code, "busy");
     });
-    await t.step("soft time limit → too_long", async () => {
+    await t.step("soft time limit while answering → too_long", async () => {
       mode = "slow";
       assertEquals(last(await call(translateBody)).code, "too_long");
     });
@@ -325,12 +398,16 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
   }
 });
 
-Deno.test({ name: "integration: settings from env (model name)", sanitizeOps: false, sanitizeResources: false }, async () => {
-  const proc = await startFn({ AI_MODEL: "gemini-3.7-flash" });
+Deno.test({ name: "integration: settings from env (model name, fallback off)", sanitizeOps: false, sanitizeResources: false }, async () => {
+  const proc = await startFn({ AI_MODEL: "gemini-3.7-flash", AI_FALLBACK_MODEL: "off" });
   try {
     mode = "ok";
     await call(translateBody);
     assertEquals(seen.at(-1)!.url, "/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse");
+    mode = "unavailable";
+    const n = seen.length;
+    assertEquals(last(await call(translateBody)).code, "busy");
+    assertEquals(seen.length - n, 1);
   } finally {
     await stopFn(proc);
   }

@@ -8,7 +8,7 @@
 //             {"type":"status","phase":"thinking"|"writing"}      progress
 //             {"type":"delta","text":"..."}                        output text (Markdown, or JSON for "study")
 //             {"type":"ping"}                                      keep-alive every 10 s
-//             {"type":"done","stop":"STOP"}                        finished
+//             {"type":"done","stop":"STOP","model":"..."}          finished (model = the one that answered)
 //             {"type":"error","code":"...","message":"...","message_en":"...","retry_after"?:seconds}
 //           Codes: busy (wait retry_after, then retry), daily_quota / user_limit / global_limit / not_configured
 //           (stop the job), too_long (split the part), refused / bad_input (this part failed), server.
@@ -20,14 +20,22 @@ declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
 const env = (k: string, fallback: string) => Deno.env.get(k) || fallback;
 const MODEL = env("AI_MODEL", "gemini-3.8-flash");
+// The newest free model is often "experiencing high demand" (503). When it is busy, try this older stable Flash model
+// at once (it has its own free quota) instead of making the student wait. "off" disables it.
+const FALLBACK = env("AI_FALLBACK_MODEL", "gemini-3.5-flash");
+const MODELS = FALLBACK === "off" || FALLBACK === MODEL ? [MODEL] : [MODEL, FALLBACK];
 const API = env("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com");
+// Under heavy load a request can sit in Google's queue with no answer and no error. If the main model hasn't started
+// answering after this long, give up on it and ask the fallback model with the time that is left.
+const FIRST_BYTE_MS = Number(env("AI_FIRST_BYTE_SEC", "40")) * 1000;
 // The free tier is shared by the whole Google project (roughly 10–15 requests a minute and ~1000 a day; the exact
 // numbers are shown in AI Studio). These keep the department under it.
-const USER_DAILY = Number(env("AI_USER_DAILY", "20")); // parts per student per 24 h
+const USER_DAILY = Number(env("AI_USER_DAILY", "20")); // parts per student per 24 h (charged once Gemini answers)
+const USER_TRIES = Number(env("AI_USER_TRIES", "60")); // calls per student per 24 h, retries included
 const GLOBAL_DAILY = Number(env("AI_GLOBAL_DAILY", "800")); // parts for the whole department per 24 h
 const GLOBAL_RPM = Number(env("AI_GLOBAL_RPM", "10")); // parts per minute for the whole department
 // Stop a call a little before the platform's wall-clock limit (150 s on Supabase's free plan, 400 s on paid plans),
-// so the browser gets a clean "too_long" and retries with a smaller part instead of a dropped connection.
+// so the browser gets a clean "too_long" (split the part) or "busy" (nothing came back) instead of a dropped connection.
 const TIME_LIMIT_MS = Number(env("AI_TIME_LIMIT_SEC", "135")) * 1000;
 
 const fail = (status: number, error: string, ar: string, en: string, extra: Record<string, unknown> = {}) =>
@@ -73,12 +81,14 @@ Deno.serve(async (req) => {
     if (!(await rateOk("ai:min", GLOBAL_RPM, 60))) {
       return fail(429, "busy", "خدمة Gemini المجانية مزدحمة هسه. راح نعيد المحاولة تلقائياً.", "The free Gemini service is busy. Retrying automatically.", { retry_after: 15 });
     }
-    // Department limit before the student's own, so a used-up department day doesn't also eat into each quota.
+    // Every call to Gemini counts here (Google's daily quota counts calls), department first so a used-up department
+    // day doesn't also eat into each student's attempts. The student's 20 parts are charged later, once Gemini
+    // actually answers, so the retries after a busy model don't use them up.
     if (!(await rateOk("ai:all", GLOBAL_DAILY, 86400))) {
       return fail(429, "global_limit", "خلص الحد اليومي للقسم كله للترجمة والتلخيص. جرّب باچر.", "The department has used today's limit for translations and summaries. Try again tomorrow.");
     }
-    if (!(await rateOk(`ai:user:${uid}`, USER_DAILY, 86400))) {
-      return fail(429, "user_limit", `خلصت حصتك اليومية (${USER_DAILY} جزء). تكدر تكمل باچر بنفس الوقت تقريباً.`, `You've used today's limit (${USER_DAILY} parts). You can continue tomorrow at about the same time.`);
+    if (!(await rateOk(`ai:try:${uid}`, USER_TRIES, 86400))) {
+      return fail(429, "user_limit", "حاولت هواية مرات اليوم لأن خدمة Gemini المجانية مزدحمة. كمّل باچر.", "Too many attempts today because the free Gemini service is busy. Continue tomorrow.");
     }
   } catch (e) {
     console.error("study-ai rate error", e);
@@ -104,31 +114,67 @@ Deno.serve(async (req) => {
     const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, TIME_LIMIT_MS);
     const ping = setInterval(() => { void send({ type: "ping" }); }, 10_000);
     const t0 = Date.now();
+    let model = MODEL;
+    let answered = false; // Gemini started answering (thoughts or text)
     try {
-      const res = await fetch(`${API}/v1beta/models/${encodeURIComponent(MODEL)}:streamGenerateContent?alt=sse`, {
-        method: "POST",
-        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
-        body: JSON.stringify(buildRequest(r)),
-        signal: ctrl.signal,
-      });
-      if (!res.ok || !res.body) {
+      const payload = JSON.stringify(buildRequest(r));
+      // The first event is awaited inside the attempt: a stuck model may send headers and then nothing.
+      let stream: AsyncIterator<Record<string, unknown>> | null = null;
+      let next: IteratorResult<Record<string, unknown>> | null = null;
+      for (const name of MODELS) {
+        model = name;
+        const lastModel = name === MODELS[MODELS.length - 1];
+        // Own signal per attempt, so a stuck main model can be dropped without cancelling the whole request.
+        const attempt = new AbortController();
+        ctrl.signal.addEventListener("abort", () => attempt.abort());
+        let stuck = false;
+        const wait = lastModel ? undefined : setTimeout(() => { stuck = true; attempt.abort(); }, FIRST_BYTE_MS);
+        let res: Response;
+        try {
+          res = await fetch(`${API}/v1beta/models/${encodeURIComponent(name)}:streamGenerateContent?alt=sse`, {
+            method: "POST",
+            headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+            body: payload,
+            signal: attempt.signal,
+          });
+          if (res.ok && res.body) {
+            stream = sseJson(res.body)[Symbol.asyncIterator]();
+            next = await stream.next();
+          }
+        } catch (e) {
+          if (!stuck) throw e;
+          console.error("study-ai gemini no answer", name, Date.now() - t0);
+          stream = null;
+          continue;
+        } finally {
+          clearTimeout(wait);
+        }
+        if (stream) break;
         const body = await res.json().catch(() => null);
         const f = classifyError(res.status, body);
-        if (f.log) console.error("study-ai gemini error", res.status, JSON.stringify(body)?.slice(0, 500));
-        await sendFailure(f);
-        return;
+        // Always log Gemini's error (status and message only; error bodies don't contain the student's file).
+        console.error("study-ai gemini error", name, res.status, f.code, JSON.stringify(body)?.slice(0, 800));
+        // Only a busy model is worth trying the next one for; a daily quota, key or input problem stops here.
+        if (f.code !== "busy" || lastModel) {
+          await sendFailure(f);
+          return;
+        }
       }
+      if (!stream || !next) return;
+      answered = true;
       await send({ type: "status", phase: "thinking" });
       let writing = false;
+      let firstText: number | undefined;
       let finish: string | undefined;
       let block: string | undefined;
       let usage: Record<string, unknown> | undefined;
-      for await (const chunk of sseJson(res.body)) {
+      for (; !next.done; next = await stream.next()) {
+        const chunk = next.value;
         if (!open) { ctrl.abort(); break; }
         if (chunk.error) {
           const err = chunk.error as { code?: unknown };
           const f = classifyError(typeof err.code === "number" ? err.code : 500, chunk);
-          if (f.log) console.error("study-ai gemini stream error", JSON.stringify(chunk).slice(0, 500));
+          console.error("study-ai gemini stream error", f.code, JSON.stringify(chunk).slice(0, 800));
           await sendFailure(f);
           return;
         }
@@ -136,7 +182,24 @@ Deno.serve(async (req) => {
         const parts = ((cand?.content as { parts?: Record<string, unknown>[] })?.parts) ?? [];
         for (const p of parts) {
           if (p.thought || typeof p.text !== "string" || !p.text) continue;
-          if (!writing) { writing = true; await send({ type: "status", phase: "writing" }); }
+          if (!writing) {
+            // The answer itself has started: only now does this part count towards the student's daily parts
+            // (a model that fails while still thinking, which happens under heavy load, costs the student nothing).
+            let allowed = true;
+            try {
+              allowed = await rateOk(`ai:user:${uid}`, USER_DAILY, 86400);
+            } catch (e) {
+              console.error("study-ai rate error", e); // don't fail a part that is already being answered
+            }
+            if (!allowed) {
+              ctrl.abort();
+              await send({ type: "error", code: "user_limit", ...m(`خلصت حصتك اليومية (${USER_DAILY} جزء). تكدر تكمل باچر بنفس الوقت تقريباً.`, `You've used today's limit (${USER_DAILY} parts). You can continue tomorrow at about the same time.`) });
+              return;
+            }
+            writing = true;
+            firstText = Date.now() - t0;
+            await send({ type: "status", phase: "writing" });
+          }
           await send({ type: "delta", text: p.text });
         }
         if (cand?.finishReason) finish = String(cand.finishReason);
@@ -146,7 +209,7 @@ Deno.serve(async (req) => {
       }
       if (!open) return;
       console.log(JSON.stringify({
-        fn: "study-ai", task: r.task, model: MODEL, finish, block, ms: Date.now() - t0,
+        fn: "study-ai", task: r.task, model, finish, block, ms: Date.now() - t0, first_text_ms: firstText,
         in: usage?.promptTokenCount, out: usage?.candidatesTokenCount, thoughts: usage?.thoughtsTokenCount,
       }));
       if (!finish && !block) {
@@ -156,10 +219,16 @@ Deno.serve(async (req) => {
       }
       const problem = finishProblem(finish, block);
       if (problem) await sendFailure(problem);
-      else await send({ type: "done", stop: finish });
+      else await send({ type: "done", stop: finish, model });
     } catch (err) {
       if (timedOut) {
-        await send({ type: "error", code: "too_long", ...m("الجزء طويل، راح نقسمه.", "This part is long; splitting it.") });
+        console.error("study-ai time limit", model, answered ? "answering" : "no answer", Date.now() - t0);
+        if (answered) {
+          await send({ type: "error", code: "too_long", ...m("الجزء طويل، راح نقسمه.", "This part is long; splitting it.") });
+        } else {
+          // Nothing came back at all: Google is overloaded, and a smaller part wouldn't help.
+          await send({ type: "error", code: "busy", retry_after: 30, ...m("خدمة Gemini المجانية ما ردّت بالوقت. راح نعيد المحاولة.", "The free Gemini service didn't answer in time. Retrying.") });
+        }
       } else if (open && !req.signal.aborted) {
         console.error("study-ai upstream error", err);
         await send({ type: "error", code: "busy", retry_after: 10, ...m("انقطع الاتصال بخدمة Gemini. راح نعيد المحاولة.", "Lost the connection to Gemini. Retrying.") });
