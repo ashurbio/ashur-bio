@@ -12,6 +12,7 @@
 | `web/src/sb/client.js` | الاتصال بالسيرفر وحفظ تسجيل الدخول |
 | `web/src/sb/screens.jsx` | شاشات الطالب |
 | `web/src/sb/admin.jsx` | لوحة الممثل |
+| `web/src/fonts/` | الخطوط، منسوخة من Google Fonts وتنحمّل من موقعنا (رخصتها OFL بملف `LICENSE.txt`) |
 | `supabase/functions/register` | إنشاء حساب ودز اسم المستخدم والرمز بالإيميل |
 | `supabase/functions/reset-pin` | «نسيت الرمز» |
 | `supabase/functions/mail-status` | فحص إعدادات الإيميل (يشتغل بس بمفتاح الاختبار) |

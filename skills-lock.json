@@ -31,11 +31,35 @@
       "skillPath": "skills/performance/SKILL.md",
       "computedHash": "ce9d36f139a1b2a6a8ac2cb222698963b8076d2dd8b41685e8e8ae589cdcf1e4"
     },
+    "pwa-development": {
+      "source": "alinaqi/maggy",
+      "sourceType": "github",
+      "skillPath": "skills/pwa-development/SKILL.md",
+      "computedHash": "356d9a26a8435778bb3bb906f5198814c48872ae87485ae97f4da3c10a0cfcc5"
+    },
     "seo": {
       "source": "addyosmani/web-quality-skills",
       "sourceType": "github",
       "skillPath": "skills/seo/SKILL.md",
       "computedHash": "01a735ac18ceb15536ac40b11a5712b3ab8f78ebe94748b3ebc3afc7f58a6f2f"
+    },
+    "supabase": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase/SKILL.md",
+      "computedHash": "17ee0fac5225bb5311e6b7ac9b35b4eb51535146444383a3047d21b191a4f240"
+    },
+    "supabase-postgres-best-practices": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase-postgres-best-practices/SKILL.md",
+      "computedHash": "e14e276241805c97dbcfe40dcbea1a3035269cc7293cac4b1832dda41a835e60"
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/react-best-practices/SKILL.md",
+      "computedHash": "3219a1944e404ffc14d1d9d6aef6dd2e3855b81387ee0a044ccbfe14d34c2357"
     },
     "web-design-guidelines": {
       "source": "vercel-labs/agent-skills",
