@@ -10,7 +10,7 @@ import { b, Bi, flat, split } from '../bi';
 import { agoBi, lsGet, lsSet } from '../util';
 import { FileError, LIMITS, iso, readFiles, removeImage, textSource } from './files';
 import {
-  useStudy, setSource, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS,
+  useStudy, setSource, setRange, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS,
 } from './run';
 import { FORMATS, FORMAT_META, DEPTHS, studyText, translationText } from './data';
 import { Markdown } from './md';
@@ -256,16 +256,14 @@ function JobPanel({ job, source, onSummarise }) {
 
 export default function Study() {
   const { notify } = useStore();
-  const { source, job, history } = useStudy();
+  const { source, range, job, history } = useStudy();
   const [opts, setOpts] = useState(() => ({ ...DEFAULTS, ...lsGet(OPTS_SLOT, {}) }));
-  const [range, setRange] = useState({ from: 1, to: 1 });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const optsRef = useRef(null);
   const running = job?.status === 'running';
 
   useEffect(() => { lsSet(OPTS_SLOT, opts); }, [opts]);
-  useEffect(() => { if (source?.kind === 'pdf') setRange({ from: 1, to: Math.min(source.pages, LIMITS.pages) }); }, [source]);
 
   const set = (k) => (v) => setOpts((o) => ({ ...o, [k]: v }));
 
@@ -298,7 +296,15 @@ export default function Study() {
 
   const summarise = () => {
     if (!job) return;
-    if (!(job.src && job.src === source)) sourceFromTranslation(job);
+    setErr('');
+    if (!(job.src && job.src === source)) {
+      try { sourceFromTranslation(job); } catch (e) {
+        const msg = e instanceof FileError ? e.message : b('ما كدرنا نجهّز الترجمة للتلخيص.', 'Couldn\'t prepare the translation for summarising.');
+        setErr(msg);
+        notify(msg);
+        return;
+      }
+    }
     setOpts((o) => ({ ...o, task: 'study', formats: o.formats.length ? o.formats : DEFAULTS.formats }));
     notify(b('اختار شنو تريد يطلع، وبعدين اضغط «ابدأ التلخيص».', 'Pick what you want, then press "Start".'));
     setTimeout(() => optsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);

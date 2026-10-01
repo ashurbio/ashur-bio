@@ -278,7 +278,7 @@ export async function readFiles(files, current) {
     const all = [...base, ...items];
     return { kind: 'images', name: all.length === 1 ? all[0].name : b(`${all.length} صور`, `${all.length} photos`), items: all, total: all.length };
   }
-  if (current?.kind === 'images') releaseSource(current);
+  // (The old photos are released by setSource once the new file has been read successfully.)
   const f = list[0];
   try {
     if (kind === 'pdf') return await readPdf(f);
@@ -397,14 +397,11 @@ function imageChunk(source, first, last) {
     numbering: 'image', start: first, count: last - first + 1, total: source.items.length,
     label: first === last ? b(`صورة ${first}`, `Photo ${first}`) : b(`الصور ${iso(`${first}–${last}`)}`, `Photos ${first}–${last}`),
     async load() {
+      const items = source.items.slice(first - 1, last);
+      const bytes = items.reduce((n, it) => n + it.blob.size, 0);
+      if (bytes > TARGET_BYTES && last > first) return { split: true }; // check before encoding several MB
       const pieces = [];
-      let bytes = 0;
-      for (let i = first; i <= last; i++) {
-        const it = source.items[i - 1];
-        bytes += it.blob.size;
-        pieces.push({ kind: 'image', media: 'image/jpeg', data: toBase64(await it.blob.arrayBuffer()) });
-      }
-      if (bytes > TARGET_BYTES && last > first) return { split: true };
+      for (const it of items) pieces.push({ kind: 'image', media: 'image/jpeg', data: toBase64(await it.blob.arrayBuffer()) });
       return { pieces, bytes };
     },
     split() {
@@ -443,8 +440,15 @@ function textChunk(text, n, total, sfx = ['', '']) {
     },
     split() {
       if (text.length < 1500) return null;
-      const [a, c] = splitText(text, Math.ceil(text.length / 2) + 200);
-      if (!c) return null;
+      // Cut into pieces at paragraph/sentence boundaries, then regroup them into two halves (nothing is dropped).
+      const pieces = splitText(text, Math.ceil(text.length / 4));
+      if (pieces.length < 2) return null;
+      let k = 0;
+      let len = 0;
+      while (k < pieces.length - 1 && len + pieces[k].length <= text.length / 2) { len += pieces[k].length; k++; }
+      k = Math.max(1, k);
+      const a = pieces.slice(0, k).join('\n\n');
+      const c = pieces.slice(k).join('\n\n');
       return [textChunk(a, n, total, [`${sfx[0]}أ`, `${sfx[1]}a`]), textChunk(c, n, total, [`${sfx[0]}ب`, `${sfx[1]}b`])];
     },
   };

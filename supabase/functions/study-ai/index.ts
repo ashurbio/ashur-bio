@@ -116,11 +116,12 @@ Deno.serve(async (req) => {
   if (!uid) return fail(401, "unauthorized", "انتهت الجلسة. سجّل دخول مرة ثانية.", "Your session expired. Please sign in again.");
 
   try {
-    if (!(await rateOk(`ai:user:${uid}`, USER_DAILY, 86400))) {
-      return fail(429, "user_limit", "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "You've reached today's limit for translations and summaries. Try again tomorrow.");
-    }
+    // Department limit first, so a day when it is used up doesn't also eat into each student's own quota.
     if (!(await rateOk("ai:all", GLOBAL_DAILY, 86400))) {
       return fail(429, "global_limit", "وصل القسم للحد اليومي للترجمة والتلخيص. جرّب باچر.", "The department has reached today's limit. Try again tomorrow.");
+    }
+    if (!(await rateOk(`ai:user:${uid}`, USER_DAILY, 86400))) {
+      return fail(429, "user_limit", "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "You've reached today's limit for translations and summaries. Try again tomorrow.");
     }
   } catch (e) {
     console.error("study-ai rate error", e);

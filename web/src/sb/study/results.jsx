@@ -1,5 +1,5 @@
 // Study material views: summary, terms, interactive MCQ / true-false, and reveal-the-answer formats.
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Check, X, RotateCcw } from 'lucide-react';
 import { b, Bi } from '../bi';
@@ -170,7 +170,9 @@ const answerText = (q) => <p dir="auto"><Inline text={q.answer} /></p>;
 const listItems = (q) => <ol>{q.items.map((x, k) => <li key={k} dir="auto"><Inline text={x} /></li>)}</ol>;
 
 export function StudyResults({ job }) {
-  const merged = mergeStudy(job.parts);
+  // Recompute only when a part finishes (not on every streamed chunk).
+  const doneKey = job.parts.map((p) => (p.status === 'done' ? p.id : '')).join('|');
+  const merged = useMemo(() => mergeStudy(job.parts), [job.id, doneKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const available = FORMATS.filter((f) => (job.options.formats || []).includes(f));
   const [tab, setTab] = useState(available[0]);
   const [showAll, setShowAll] = useState(false);
@@ -214,7 +216,7 @@ export function StudyResults({ job }) {
   );
 }
 
-function FormatBody({ f, list, L, showAll }) {
+const FormatBody = React.memo(function FormatBody({ f, list, L, showAll }) {
   if (!list.length) return null;
   switch (f) {
     case 'summary': return <Summary list={list} />;
@@ -226,4 +228,4 @@ function FormatBody({ f, list, L, showAll }) {
     case 'blanks': return <QA list={list} showAll={showAll} render={answerText} />;
     default: return <QA list={list} showAll={showAll} render={answerText} />;
   }
-}
+});

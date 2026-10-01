@@ -263,6 +263,20 @@ with sync_playwright() as p:
     check("too long: 2-page parts retried as single pages", calls[:2] == [(1, 2), (3, 2)] and (1, 1) in calls and (2, 1) in calls and (4, 1) in calls, str(calls))
     check("too long: all 5 pages still translated in order",
           [page.locator(".job .pg-mark").nth(i).inner_text() for i in range(page.locator(".job .pg-mark").count())] == [f"صفحة {i}" for i in range(1, 6)])
+    # pasted text that is too long is split in two without losing any paragraph
+    page.locator(".src .icon-btn").click()
+    page.locator(".drop button", has_text="الصق نص").click()
+    paras = [f"Paragraph {k}: " + ("cell biology " * 80) for k in range(1, 4)]
+    page.fill("#study-paste", "\n\n".join(paras))
+    page.locator(".paste .btn").click()
+    n0 = len(mb.study_calls)
+    run_and_wait(page, "ترجمة")
+    sent = [c["pieces"][0]["text"] for c in mb.study_calls[n0:]]
+    retried = "\n".join(sent[1:])
+    check("split text: first try too long, then two halves", len(sent) == 3, f"{len(sent)} requests")
+    check("split text: every paragraph is sent after splitting", all(f"Paragraph {k}:" in retried for k in (1, 2, 3)))
+    check("split text: no failed parts", page.locator(".tpart.failed").count() == 0)
+
     mb.study_mode = "user_limit"
     page.locator(".job .icon-btn").click()
     page.locator(".start-row .btn").click()
@@ -293,6 +307,34 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     sw = page.evaluate("document.documentElement.scrollWidth")
     check("reflow: no horizontal scroll at 320 px", sw <= 320, f"scrollWidth={sw}")
+    ctx.close()
+
+    # ---------- the chosen page range survives switching tabs; a screen that can't load shows a retry
+    mb = MockBackend()
+    ctx = new_ctx(browser, mb)
+    page = ctx.new_page()
+    login(page)
+    open_study(page)
+    upload(page, FX / "lecture.pdf")
+    page.fill("#pg-from", "3")
+    page.evaluate("location.hash = '#schedule'")
+    page.wait_for_timeout(300)
+    open_study(page)
+    check("range: page range kept after switching tabs", page.input_value("#pg-from") == "3" and "2 أجزاء" in page.inner_text(".start-row"), page.inner_text(".start-row").replace("\n", " "))
+    ctx.close()
+
+    mb = MockBackend()
+    ctx = new_ctx(browser, mb)
+    page = ctx.new_page()
+    errs = []
+    page.on("pageerror", lambda e: errs.append(str(e)))
+    login(page)
+    page.route("**/assets/index-*.js", lambda r: r.abort())  # the study chunk can't be downloaded
+    page.evaluate("location.hash = '#study'")
+    page.wait_for_timeout(800)
+    check("offline: study screen shows a retry instead of a blank app",
+          page.locator("main [role=alert] button", has_text="إعادة التحميل").is_visible() and page.locator(".bottom-nav").is_visible())
+    page.unroute("**/assets/index-*.js")
     ctx.close()
 
     # ---------- desktop

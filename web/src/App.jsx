@@ -12,6 +12,23 @@ import { ROLE_LABEL, uniBi, deptBi } from '@/sb/util';
 // Loaded on first visit only (it brings the file readers and the quiz views).
 const Study = lazy(() => import('@/sb/study/index.jsx'));
 
+// If a lazily loaded screen can't be fetched (offline, or the site was just updated), show a retry
+// instead of letting the whole app go blank.
+class ScreenBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="empty" role="alert">
+        <strong><Bi t={b('ما كدرنا نفتح هذا القسم', 'This section couldn\'t be opened')} /></strong>
+        <span><Bi t={b('تأكد من الإنترنت وحاول مرة ثانية.', 'Check your internet connection and try again.')} /></span>
+        <button className="btn sm" type="button" onClick={() => window.location.reload()}><Bi t={b('إعادة التحميل', 'Reload')} /></button>
+      </div>
+    );
+  }
+}
+
 const TABS = [
   { id: 'home', label: b('الرئيسية', 'Home'), icon: HomeIcon, main: true },
   { id: 'schedule', label: b('الجدول', 'Schedule'), icon: CalendarDays, main: true },
@@ -127,7 +144,9 @@ function Shell() {
               <button type="button" style={{ color: 'var(--accent)' }} onClick={closeHint}><Bi t={b('تمام', 'Got it')} /></button>
             </div>
           ) : null}
-          <Suspense fallback={<div className="panel"><Skeleton /></div>}><View go={go} /></Suspense>
+          <ScreenBoundary key={current}>
+            <Suspense fallback={<div className="panel"><Skeleton /></div>}><View go={go} /></Suspense>
+          </ScreenBoundary>
         </div>
       </main>
 

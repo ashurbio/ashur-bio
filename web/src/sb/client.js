@@ -205,14 +205,13 @@ export const db = {
 // Signed-in call to an edge function that streams its answer (study-ai). Returns the raw Response so the
 // caller can read the stream; `body` is an already-serialised JSON string (it can be several MB).
 export async function postStream(name, body, signal) {
-  const send = async () => {
-    const t = await accessToken();
+  const run = async () => {
+    const t = await accessToken(); // may throw session_expired: let it through as is
     const h = { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' };
     if (t) h.Authorization = `Bearer ${t}`;
-    return fetch(`${SUPABASE_URL}/functions/v1/${name}`, { method: 'POST', headers: h, body, signal });
-  };
-  const run = async () => {
-    try { return await send(); } catch (e) {
+    try {
+      return await fetch(`${SUPABASE_URL}/functions/v1/${name}`, { method: 'POST', headers: h, body, signal });
+    } catch (e) {
       if (e?.name === 'AbortError') throw e;
       throw new ApiError(NET_MSG, 0, 'network');
     }

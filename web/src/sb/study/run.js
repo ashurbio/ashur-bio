@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from 'react';
 import { getSession, onSessionChange, postStream } from '../client';
 import { b } from '../bi';
-import { FileError, planChunks, releaseSource, textSource } from './files';
+import { FileError, LIMITS, planChunks, releaseSource, textSource } from './files';
 import { groupFormats, normalizeStudy, translationText } from './data';
 
 const HISTORY_SLOT = 'ashur-bio-study-history';
@@ -34,7 +34,7 @@ function loadHistory() {
   } catch { return []; }
 }
 
-let state = { source: null, job: null, history: loadHistory(), v: 0 };
+let state = { source: null, range: null, job: null, history: loadHistory(), v: 0 };
 const subs = new Set();
 const subscribe = (fn) => { subs.add(fn); return () => subs.delete(fn); };
 function emit() {
@@ -54,7 +54,7 @@ onSessionChange((sess) => {
   owner = id;
   if (state.job?.status === 'running') { state.job.status = 'stopped'; state.job.ctrl.abort(); }
   releaseSource(state.source);
-  state = { source: null, job: null, history: loadHistory(), v: state.v };
+  state = { source: null, range: null, job: null, history: loadHistory(), v: state.v };
   emit();
 });
 
@@ -63,7 +63,15 @@ export const getStudy = () => state;
 
 export function setSource(src) {
   if (state.source && state.source !== src && !(src?.kind === 'images' && state.source.kind === 'images')) releaseSource(state.source);
-  state = { ...state, source: src };
+  // A new PDF starts with all its pages selected (up to the per-request page limit).
+  const range = src?.kind === 'pdf' ? (src === state.source ? state.range : { from: 1, to: Math.min(src.pages, LIMITS.pages) }) : null;
+  state = { ...state, source: src, range };
+  emit();
+}
+
+// Kept here, not in the screen, so the chosen pages survive switching tabs.
+export function setRange(range) {
+  state = { ...state, range };
   emit();
 }
 
@@ -79,11 +87,13 @@ function saveHistory(job) {
     parts: done.map((p) => ({ id: p.id, label: p.label, numbering: p.numbering, formats: p.formats, status: 'done', text: p.text, data: p.data })),
   };
   let list = [entry, ...state.history.filter((h) => h.id !== job.id)].slice(0, HISTORY_MAX);
-  // localStorage holds ~5 MB; drop the oldest results until it fits.
-  while (list.length) {
-    try { localStorage.setItem(slot(), JSON.stringify(list)); break; } catch { list = list.slice(0, -1); }
+  // localStorage holds ~5 MB: drop the oldest results until the new one fits. If it can't fit even alone,
+  // keep the saved list as it is (the result stays on screen, it just isn't remembered).
+  for (;;) {
+    try { localStorage.setItem(slot(), JSON.stringify(list)); state = { ...state, history: list }; return; } catch { /* over quota */ }
+    if (list.length <= 1) return;
+    list = list.slice(0, -1);
   }
-  state = { ...state, history: list };
 }
 
 export function deleteHistory(id) {
@@ -178,8 +188,13 @@ function pump(job) {
     if (active >= CONCURRENCY) break;
     if (p.status !== 'queued' || p.wait > Date.now()) continue;
     p.status = 'running';
+    p.run = (p.run || 0) + 1;
     active++;
-    runPart(job, p).catch(() => fail(p, SERVER)).finally(() => { emit(); pump(job); });
+    const run = p.run;
+    const signal = job.ctrl.signal;
+    runPart(job, p, run, signal)
+      .catch(() => { if (!signal.aborted && p.run === run) fail(p, SERVER); })
+      .finally(() => { emit(); pump(job); });
   }
   if (active === 0) {
     const waiting = job.parts.filter((p) => p.status === 'queued');
@@ -232,7 +247,10 @@ function halt(job, msg) {
   saveHistory(job);
 }
 
-async function runPart(job, part) {
+// `run` and `signal` identify this attempt. After Stop/Continue or a retry, an older attempt that is still
+// waiting (reading the PDF, uploading) must not write into the part any more.
+async function runPart(job, part, run, signal) {
+  const stale = () => signal.aborted || part.run !== run || job.status !== 'running';
   part.phase = 'reading';
   part.text = '';
   part.error = '';
@@ -242,10 +260,10 @@ async function runPart(job, part) {
   try {
     loaded = await part.chunk.load();
   } catch (e) {
-    fail(part, e instanceof FileError ? e.message : b('ما كدرنا نجهّز هذا الجزء من الملف.', 'We couldn\'t prepare this part of the file.'));
+    if (!stale()) fail(part, e instanceof FileError ? e.message : b('ما كدرنا نجهّز هذا الجزء من الملف.', 'We couldn\'t prepare this part of the file.'));
     return;
   }
-  if (job.status !== 'running') { part.status = 'stopped'; return; }
+  if (stale()) return;
   if (loaded.split) {
     if (!splitPart(job, part)) fail(part, SERVER);
     return;
@@ -261,15 +279,17 @@ async function runPart(job, part) {
 
   let res;
   try {
-    res = await postStream('study-ai', body, job.ctrl.signal);
+    res = await postStream('study-ai', body, signal);
   } catch (e) {
-    if (job.status !== 'running') { part.status = 'stopped'; return; }
+    if (stale()) return;
     if (e?.code === 'session_expired') { halt(job, e.message); return; }
     transient(part, e?.message || NET);
     return;
   }
+  if (stale()) { res.body?.cancel().catch(() => {}); return; }
   if (!res.ok) {
     const j = await res.json().catch(() => null);
+    if (stale()) return;
     const msg = bi(j, SERVER);
     const code = j?.error || '';
     if (STOP_CODES.has(code) || res.status === 401) { halt(job, msg); return; }
@@ -295,15 +315,15 @@ async function runPart(job, part) {
         if (!line.trim()) continue;
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.type === 'delta') { part.text += ev.text; part.phase = 'writing'; emitSoon(); }
+        if (stale()) { reader.cancel().catch(() => {}); return; }
+        // Study answers are JSON and only shown when complete, so their deltas don't need a re-render.
+        if (ev.type === 'delta') { part.text += ev.text; if (part.phase !== 'writing' || job.task === 'translate') { part.phase = 'writing'; emitSoon(); } }
         else if (ev.type === 'status') { part.phase = ev.phase; emitSoon(); }
         else if (ev.type === 'done' || ev.type === 'error') end = ev;
       }
     }
-  } catch {
-    if (job.status !== 'running') { part.status = 'stopped'; return; }
-  }
-  if (job.status !== 'running') { part.status = 'stopped'; part.text = ''; return; }
+  } catch { /* connection dropped: handled below as "no end event" */ }
+  if (stale()) return;
   if (!end) { transient(part, NET); return; }
   if (end.type === 'error') {
     const msg = bi(end, SERVER);

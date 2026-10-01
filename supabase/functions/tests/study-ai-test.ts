@@ -67,7 +67,7 @@ Deno.test("settingsText: page markers and ranges", () => {
 type Seen = { body: Record<string, any>; beta: string | null };
 const seen: Seen[] = [];
 let mode: "ok" | "json" | "refusal" | "busy" | "slow" = "ok";
-let rateAllowed = true;
+let denyKey = ""; // rate_hit answers false for this key
 
 function sse(events: [string, unknown][]): string {
   return events.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join("");
@@ -100,7 +100,10 @@ const fake = Deno.serve({ port: 8787, onListen() {} }, async (req) => {
     const id = url.searchParams.get("id");
     return j(id === "eq.u1" ? { status: "active" } : { status: "disabled" });
   }
-  if (url.pathname === "/rest/v1/rpc/rate_hit") return j(rateAllowed);
+  if (url.pathname === "/rest/v1/rpc/rate_hit") {
+    const { p_key } = await req.json();
+    return j(!(denyKey && String(p_key).startsWith(denyKey)));
+  }
   // --- Claude
   if (url.pathname === "/v1/messages") {
     const body = await req.json();
@@ -171,12 +174,16 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assert(r.json.message && r.json.message_en);
       assertEquals(seen.length, n);
     });
-    await t.step("daily limit", async () => {
-      rateAllowed = false;
-      const r = await call(translateBody);
-      rateAllowed = true;
+    await t.step("daily limits: student and department", async () => {
+      denyKey = "ai:user:";
+      let r = await call(translateBody);
       assertEquals(r.status, 429);
       assertEquals(r.json.error, "user_limit");
+      denyKey = "ai:all";
+      r = await call(translateBody);
+      assertEquals(r.status, 429);
+      assertEquals(r.json.error, "global_limit");
+      denyKey = "";
     });
     await t.step("translate streams deltas and sends the right request", async () => {
       mode = "ok";

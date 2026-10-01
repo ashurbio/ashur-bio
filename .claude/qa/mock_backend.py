@@ -101,9 +101,10 @@ class MockBackend:
         if self.study_mode == "user_limit":
             return 429, {"ok": False, "error": "user_limit", "message": "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "message_en": "You've reached today's limit."}
         start, count = body.get("start", 1), body.get("count", 1)
-        key = (body.get("task"), start, count, tuple(body.get("formats") or []))
+        key = (body.get("task"), start, count, tuple(body.get("formats") or []), len(json.dumps(body.get("pieces"))))
         events = [{"type": "status", "phase": "thinking"}, {"type": "status", "phase": "writing"}]
-        if self.study_mode == "too_long_once" and count > 1 and key not in self._too_long_done:
+        long_text = body.get("numbering") == "part" and sum(len(x.get("text", "")) for x in body.get("pieces", [])) > 3000
+        if self.study_mode == "too_long_once" and (count > 1 or long_text) and key not in self._too_long_done:
             self._too_long_done.add(key)
             events.append({"type": "error", "code": "too_long", "message": "الجزء طويل، راح نقسمه.", "message_en": "Too long."})
             return 200, events
