@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Pencil, ExternalLink, MapPin, ChevronDown, Minus, LogOut } from 'lucide-react';
+import { Plus, Pencil, ExternalLink, MapPin, ChevronDown, Minus, LogOut, Languages } from 'lucide-react';
 import { useStore } from './store';
 import { useEditor } from './editor';
 import { db, getSession } from './client';
@@ -278,6 +278,13 @@ export function Home({ go }) {
               ))}
             </div>
           )}
+        </article>
+        <article className="panel span study-cta">
+          <div className="min0">
+            <h2><Bi t={b('المترجم والملخّص', 'Translate & summarise')} /></h2>
+            <p className="note"><Bi t={b('ارفع الملزمة أو صوّرها: نترجمها، أو نطلّع منها خلاصة وأسئلة اختيار من متعدد، صح وخطأ، عدّد وعلّل.', 'Upload or photograph a handout: we translate it, or turn it into a summary with MCQ, true/false, list and give-reasons questions.')} /></p>
+          </div>
+          <button className="btn" type="button" onClick={() => go('study')}><Languages size={17} aria-hidden="true" /><Bi t={b('جرّبه', 'Try it')} /></button>
         </article>
         {settings.rep_name || settings.rep_contact ? (
           <article className="panel span rep">

@@ -93,7 +93,7 @@ with sync_playwright() as p:
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(500)
         report[f"{scheme}:login"] = {"axe": run_axe(page), "manual": page.evaluate(MANUAL), "focus": focus_check(page, 15)}
-        for user, pin, tabs in (("bio-std01", "482913", ["home", "schedule", "announcements", "exams", "materials", "absences", "account"]),
+        for user, pin, tabs in (("bio-std01", "482913", ["home", "schedule", "announcements", "exams", "materials", "study", "absences", "account"]),
                                 ("bio-rep01", "735164", ["admin"])):
             login(page, user, pin)
             for tab in tabs:
@@ -116,7 +116,7 @@ with sync_playwright() as p:
     page.wait_for_load_state("networkidle")
     reflow = {"login": page.evaluate("document.documentElement.scrollWidth")}
     login(page, "bio-std01", "482913")
-    for tab in ["home", "schedule", "announcements", "exams", "materials", "absences", "account"]:
+    for tab in ["home", "schedule", "announcements", "exams", "materials", "study", "absences", "account"]:
         page.evaluate(f"location.hash = '#{tab}'")
         page.wait_for_timeout(500)
         reflow[tab] = page.evaluate("document.documentElement.scrollWidth")

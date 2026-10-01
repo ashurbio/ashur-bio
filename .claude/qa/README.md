@@ -8,6 +8,7 @@ to Supabase.
 |------|--------------|
 | `mock_backend.py` | Fakes `/auth/v1`, `/rest/v1` and `/functions/v1` with sample subjects, schedule, exams, materials and announcements. Users: `bio-std01` / `482913` (student), `bio-rep01` / `735164` (owner). |
 | `test_e2e.py` | Login (wrong and right PIN), session persistence, every tab, student blocked from admin, More sheet + Escape, absence +1 saves, logout, rep admin panel, dark mode, desktop, register form. Saves screenshots. |
+| `test_study.py` | «المترجم والملخّص»: PDF وصور و Word و PowerPoint ونص، الترجمة، كل أنواع الأسئلة، الاختبار التفاعلي، التنزيل، السجل بعد إعادة التحميل، تقسيم الأجزاء الطويلة، الحد اليومي، أخطاء الملفات، الخصوصية بين الحسابات، axe بالفاتح والداكن، و 320px. الملفات التجريبية تنصنع تلقائياً (`study_fixtures.py`). |
 | `test_a11y.py` | axe-core (WCAG 2.2 AA + best practices) on every screen in light and dark, plus manual checks: text under 12px, tap targets under 24px, focus hidden behind the fixed bars, reflow at 320px. |
 | `gzserver.py` | Static server that gzips like GitHub Pages, for realistic Lighthouse runs. |
 
@@ -22,6 +23,10 @@ cd .claude/qa && npm install --no-save axe-core@4 lighthouse@12
 python3 ../skills/webapp-testing/scripts/with_server.py \
   --server "exec python3 -m http.server 8000 --directory ../../web/dist" --port 8000 \
   -- python3 test_e2e.py http://localhost:8000/ shots
+
+python3 ../skills/webapp-testing/scripts/with_server.py \
+  --server "exec python3 -m http.server 8000 --directory ../../web/dist" --port 8000 \
+  -- python3 test_study.py http://localhost:8000/ shots
 
 python3 ../skills/webapp-testing/scripts/with_server.py \
   --server "exec python3 -m http.server 8000 --directory ../../web/dist" --port 8000 \

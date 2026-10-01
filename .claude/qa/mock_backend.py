@@ -69,12 +69,59 @@ USERS = {
 }
 
 
+def _study_item(fmt, n, page):
+    """One sample item per study format, in the shape the study-ai function returns."""
+    return {
+        "summary": {"heading": f"الخلية {n}", "points": [f"**الغشاء البلازمي (Plasma membrane)** يحيط بالخلية {n}.", "يتحكم بدخول وخروج المواد."], "page": page},
+        "terms": {"term": f"Organelle {n}", "definition": "تركيب داخل الخلية يؤدي وظيفة محددة.", "page": page},
+        "mcq": {"question": f"سؤال {n}: أين يُصنع الـ ATP بشكل رئيسي؟", "options": ["النواة", "الميتوكوندريا (Mitochondria)", "جهاز كولجي", "الرايبوسوم"], "answer": 1,
+                "explanation": "الميتوكوندريا هي موقع التنفس الخلوي.", "page": page},
+        "true_false": {"statement": f"عبارة {n}: الرايبوسومات تصنع البروتين.", "answer": n % 2 == 1, "correction": "الرايبوسومات موقع تصنيع البروتين.", "page": page},
+        "lists": {"question": f"عدّد {n}: مكونات الخلية الحيوانية", "items": ["الغشاء البلازمي", "السايتوبلازم", "النواة"], "page": page},
+        "reasons": {"question": f"علّل {n}: تسمى الميتوكوندريا محطة الطاقة", "answer": "لأنها موقع إنتاج الـ ATP.", "page": page},
+        "compare": {"title": f"مقارنة {n}", "a": "الخلية النباتية", "b": "الخلية الحيوانية", "rows": [{"aspect": "الجدار الخلوي", "a": "موجود", "b": "غير موجود"}], "page": page},
+        "blanks": {"sentence": f"جملة {n}: يحدث البناء الضوئي في _____.", "answer": "البلاستيدات الخضراء", "page": page},
+        "essay": {"question": f"سؤال مقالي {n}: اشرح عملية الانقسام", "answer": "يمر الانقسام بعدة مراحل...", "page": page},
+    }[fmt]
+
+
 class MockBackend:
     def __init__(self):
         self.absences = {"u-std": {"s1": 2, "s2": 5, "s3": 0}, "u-rep": {}}
         self.sessions = {}  # token -> user id
         self.calls = []
         self.join_code = "ASHUR-25"
+        self.study_calls = []        # request bodies sent to study-ai
+        self.study_mode = "ok"       # ok | too_long_once | user_limit
+        self._too_long_done = set()
+
+    def study_ai(self, body):
+        """Fake study-ai: answers in the same NDJSON stream format as the real function."""
+        self.study_calls.append(body)
+        if self.study_mode == "user_limit":
+            return 429, {"ok": False, "error": "user_limit", "message": "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "message_en": "You've reached today's limit."}
+        start, count = body.get("start", 1), body.get("count", 1)
+        key = (body.get("task"), start, count, tuple(body.get("formats") or []), len(json.dumps(body.get("pieces"))))
+        events = [{"type": "status", "phase": "thinking"}, {"type": "status", "phase": "writing"}]
+        long_text = body.get("numbering") == "part" and sum(len(x.get("text", "")) for x in body.get("pieces", [])) > 3000
+        if self.study_mode == "too_long_once" and (count > 1 or long_text) and key not in self._too_long_done:
+            self._too_long_done.add(key)
+            events.append({"type": "error", "code": "too_long", "message": "الجزء طويل، راح نقسمه.", "message_en": "Too long."})
+            return 200, events
+        if body.get("task") == "translate":
+            unit = {"page": "صفحة", "image": "صورة", "slide": "شريحة", "part": "جزء"}[body.get("numbering", "page")]
+            out = []
+            for n in range(start, start + count):
+                out.append(f"--- {unit} {n} ---\n# الخلية (Cell) {n}\n\nالخلية هي **الوحدة الأساسية** للحياة.\n\n- الغشاء البلازمي (Plasma membrane)\n- السايتوبلازم (Cytoplasm)\n\n| التركيب | الوظيفة |\n|---|---|\n| النواة | التحكم |\n")
+            text = "\n".join(out)
+        else:
+            data = {"topic": f"تركيب الخلية {start}", "notes": []}
+            for f in body.get("formats") or []:
+                data[f] = [_study_item(f, start * 10 + i, str(start)) for i in range(2)]
+            text = json.dumps(data, ensure_ascii=False)
+        half = len(text) // 2
+        events += [{"type": "delta", "text": text[:half]}, {"type": "delta", "text": text[half:]}, {"type": "done", "stop": "end_turn"}]
+        return 200, events
 
     def _user_for(self, headers):
         auth = headers.get("authorization", "")
@@ -126,6 +173,14 @@ class MockBackend:
             if body.get("join_code", "").upper() != self.join_code:
                 return ok({"ok": False, "error": "bad_join_code", "message": "رمز القسم غير صحيح. تأكد منه عند الممثل.", "message_en": "The department code is wrong."}, 403)
             return ok({"ok": True, "message": "تم إنشاء حسابك. دزينا اسم المستخدم ورمز الدخول على إيميلك.", "message_en": "Your account is ready. We emailed you your username and PIN."})
+        if path == "/functions/v1/study-ai":
+            if self._user_for(hdrs) is None:
+                return ok({"ok": False, "error": "unauthorized", "message": "انتهت الجلسة.", "message_en": "Session expired."}, 401)
+            status, res = self.study_ai(body)
+            if isinstance(res, dict):
+                return ok(res, status)
+            return route.fulfill(status=200, content_type="application/x-ndjson; charset=utf-8", headers={"access-control-allow-origin": "*"},
+                                 body="\n".join(json.dumps(e, ensure_ascii=False) for e in res) + "\n")
         if path == "/functions/v1/reset-pin":
             return ok({"ok": True, "message": "إذا الإيميل مسجل عندنا، راح يوصلك رمز دخول جديد خلال دقائق.", "message_en": "If this email is registered with us, a new PIN will arrive within a few minutes."})
 

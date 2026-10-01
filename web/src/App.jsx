@@ -1,13 +1,33 @@
-import React, { useEffect, useState } from 'react';
-import { Home as HomeIcon, CalendarDays, Megaphone, ClipboardList, BookOpen, UserRound, ShieldCheck, CircleSlash2, MoreHorizontal, WifiOff } from 'lucide-react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { Home as HomeIcon, CalendarDays, Megaphone, ClipboardList, BookOpen, UserRound, ShieldCheck, CircleSlash2, MoreHorizontal, WifiOff, Languages } from 'lucide-react';
 import { StoreProvider, useStore } from '@/sb/store';
 import { EditorProvider } from '@/sb/editor';
 import AuthScreen from '@/sb/auth';
 import AdminPanel from '@/sb/admin';
 import { Home, Schedule, Announcements, Exams, Materials, Absences, Account, hasUnseenUrgent } from '@/sb/screens';
-import { Backdrop, CellMark, Sheet, Toast } from '@/sb/ui';
+import { Backdrop, CellMark, Sheet, Skeleton, Toast } from '@/sb/ui';
 import { Bi, b, flat } from '@/sb/bi';
 import { ROLE_LABEL, uniBi, deptBi } from '@/sb/util';
+
+// Loaded on first visit only (it brings the file readers and the quiz views).
+const Study = lazy(() => import('@/sb/study/index.jsx'));
+
+// If a lazily loaded screen can't be fetched (offline, or the site was just updated), show a retry
+// instead of letting the whole app go blank.
+class ScreenBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="empty" role="alert">
+        <strong><Bi t={b('ما كدرنا نفتح هذا القسم', 'This section couldn\'t be opened')} /></strong>
+        <span><Bi t={b('تأكد من الإنترنت وحاول مرة ثانية.', 'Check your internet connection and try again.')} /></span>
+        <button className="btn sm" type="button" onClick={() => window.location.reload()}><Bi t={b('إعادة التحميل', 'Reload')} /></button>
+      </div>
+    );
+  }
+}
 
 const TABS = [
   { id: 'home', label: b('الرئيسية', 'Home'), icon: HomeIcon, main: true },
@@ -15,6 +35,7 @@ const TABS = [
   { id: 'announcements', label: b('الإعلانات', 'Announcements'), nav: b('الإعلانات', 'Notices'), icon: Megaphone, main: true },
   { id: 'exams', label: b('الامتحانات', 'Exams'), icon: ClipboardList, main: true },
   { id: 'materials', label: b('المحاضرات والملفات', 'Lectures & files'), icon: BookOpen },
+  { id: 'study', label: b('المترجم والملخّص', 'Translate & summarise'), icon: Languages },
   { id: 'absences', label: b('غياباتي', 'My absences'), icon: CircleSlash2 },
   { id: 'account', label: b('حسابي', 'My account'), icon: UserRound },
   { id: 'admin', label: b('لوحة الممثل', 'Representative panel'), icon: ShieldCheck, staff: true },
@@ -67,7 +88,7 @@ function Shell() {
   const urgentDot = current !== 'announcements' && hasUnseenUrgent(data.announcements);
   const deptLine = deptBi(settings);
 
-  const View = { home: Home, schedule: Schedule, announcements: Announcements, exams: Exams, materials: Materials, absences: Absences, account: Account, admin: AdminPanel }[current] || Home;
+  const View = { home: Home, schedule: Schedule, announcements: Announcements, exams: Exams, materials: Materials, study: Study, absences: Absences, account: Account, admin: AdminPanel }[current] || Home;
 
   if (phase === 'loading' && !profile) {
     return <div className="boot"><CellMark size={52} /><div className="spinner" role="status" aria-label="جارٍ التحميل / Loading" /></div>;
@@ -123,7 +144,9 @@ function Shell() {
               <button type="button" style={{ color: 'var(--accent)' }} onClick={closeHint}><Bi t={b('تمام', 'Got it')} /></button>
             </div>
           ) : null}
-          <View go={go} />
+          <ScreenBoundary key={current}>
+            <Suspense fallback={<div className="panel"><Skeleton /></div>}><View go={go} /></Suspense>
+          </ScreenBoundary>
         </div>
       </main>
 

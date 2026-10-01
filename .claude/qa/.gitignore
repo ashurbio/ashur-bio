@@ -5,3 +5,4 @@ shots*/
 !package.json
 lh*.html
 __pycache__/
+fixtures/
