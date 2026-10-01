@@ -202,6 +202,30 @@ export const db = {
   rpc: (fn, args = {}) => request(`/rest/v1/rpc/${fn}`, { method: 'POST', body: args }),
 };
 
+// Signed-in call to an edge function that streams its answer (study-ai). Returns the raw Response so the
+// caller can read the stream; `body` is an already-serialised JSON string (it can be several MB).
+export async function postStream(name, body, signal) {
+  const send = async () => {
+    const t = await accessToken();
+    const h = { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' };
+    if (t) h.Authorization = `Bearer ${t}`;
+    return fetch(`${SUPABASE_URL}/functions/v1/${name}`, { method: 'POST', headers: h, body, signal });
+  };
+  const run = async () => {
+    try { return await send(); } catch (e) {
+      if (e?.name === 'AbortError') throw e;
+      throw new ApiError(NET_MSG, 0, 'network');
+    }
+  };
+  let res = await run();
+  if (res.status === 401 && session) {
+    await res.body?.cancel();
+    await refresh();
+    res = await run();
+  }
+  return res;
+}
+
 // Public edge functions (register, reset-pin). They always answer {ok, message}.
 export async function callFunction(name, body) {
   let res;

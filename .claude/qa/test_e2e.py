@@ -90,7 +90,7 @@ with sync_playwright() as p:
     check("session: persists after reload", page.locator("h1", has_text="مرحباً").is_visible())
 
     # ---------- 2. Every tab
-    tabs = ["schedule", "announcements", "exams", "materials", "absences", "account"]
+    tabs = ["schedule", "announcements", "exams", "materials", "study", "absences", "account"]
     for i, tab in enumerate(tabs, start=4):
         goto_tab(page, tab)
         h1 = page.locator("main h1").first
