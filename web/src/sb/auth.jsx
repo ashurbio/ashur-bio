@@ -95,7 +95,7 @@ export default function AuthScreen() {
   }
 
   return (
-    <div className="auth">
+    <main className="auth">
       <div className="auth-card">
         <div className="auth-brand">
           <CellMark size={44} />
@@ -186,6 +186,6 @@ export default function AuthScreen() {
           </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }

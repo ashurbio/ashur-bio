@@ -108,7 +108,7 @@ function TodayRibbon({ lectures, subjects, now }) {
   return (
     <div className="ribbon-wrap">
       <p className="ribbon-status">{status}</p>
-      <div className="ribbon" role="list" aria-label="محاضرات اليوم على خط الوقت / Today's lectures on a timeline">
+      <div className="ribbon" role="group" aria-label="محاضرات اليوم على خط الوقت / Today's lectures on a timeline">
         <div className="ribbon-track" style={{ minWidth: `${Math.max(lectures.length * 118, 280)}px` }}>
           {hours.map((h) => (
             <span key={h} className="tick" style={{ insetInlineStart: `${pos(h)}%` }}>
@@ -123,7 +123,6 @@ function TodayRibbon({ lectures, subjects, now }) {
               <button
                 key={l.id}
                 type="button"
-                role="listitem"
                 className={`rb-block ${state}${sel === l.id ? ' sel' : ''}`}
                 style={{ insetInlineStart: `${pos(a)}%`, width: `${pos(e) - pos(a)}%`, '--c': s?.color || 'var(--accent)' }}
                 onClick={() => setSel(sel === l.id ? null : l.id)}
@@ -302,6 +301,10 @@ export function Schedule() {
   const withSat = data.schedule.some((l) => l.day === 6);
   const days = WEEK_ORDER.filter((d) => d !== 6 || withSat);
   const [day, setDay] = useState(days.includes(now.dow) ? now.dow : 0);
+  const chipsRef = useRef(null);
+  useEffect(() => {
+    chipsRef.current?.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [day, loaded]);
   const list = data.schedule.filter((l) => l.day === day).sort((x, y) => toMin(x.start_time) - toMin(y.start_time));
   return (
     <div className="stack-lg">
@@ -310,7 +313,7 @@ export function Schedule() {
         <Empty title={b('الجدول فارغ حالياً', 'The timetable is empty')}>{isStaff ? b('أضف محاضرات الأسبوع مع القاعة ونوع المحاضرة.', 'Add the week\'s lectures with the room and lecture type.') : b('يضيف الممثل جدول الأسبوع هنا.', 'The representative will add the weekly timetable here.')}</Empty>
       ) : (
         <>
-          <div className="filters" role="group" aria-label="أيام الأسبوع / Days of the week">
+          <div className="filters" role="group" aria-label="أيام الأسبوع / Days of the week" ref={chipsRef}>
             {days.map((d) => (
               <button key={d} type="button" className="fchip" aria-pressed={day === d} onClick={() => setDay(d)}>
                 <Bi t={dayBi(d)} />{d === now.dow ? <span className="today-tag"><Bi t={b('اليوم', 'Today')} inline /></span> : null}
@@ -343,7 +346,7 @@ export function Announcements() {
             <article key={a.id} className={`ann${a.urgent ? ' urgent' : ''}`}>
               <div className="h">
                 <div className="min0">
-                  <h3>{a.title}</h3>
+                  <h2>{a.title}</h2>
                   <div className="tags">
                     {a.urgent ? <span className="chip urgent"><Bi t={b('عاجل', 'Urgent')} inline /></span> : null}
                     {a.pinned ? <span className="chip"><Bi t={b('مثبّت', 'Pinned')} inline /></span> : null}

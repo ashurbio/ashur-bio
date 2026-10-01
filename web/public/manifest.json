@@ -1,6 +1,8 @@
 {
+  "id": "./",
   "name": "بوابة قسم علوم الحياة | Life Sciences Portal - Ashur University",
   "short_name": "علوم الحياة",
+  "description": "بوابة طلاب قسم علوم الحياة في جامعة آشور: الجدول والإعلانات والامتحانات والمحاضرات. | Ashur University Life Sciences student portal.",
   "lang": "ar",
   "dir": "rtl",
   "scope": "./",
@@ -8,8 +10,10 @@
   "display": "standalone",
   "background_color": "#E9F1FF",
   "theme_color": "#1D64E8",
+  "categories": ["education"],
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }
