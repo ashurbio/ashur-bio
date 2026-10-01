@@ -1,41 +1,37 @@
-// Study assistant: translates or summarises one part of a handout with Claude and streams the result back.
-// The browser splits big files into small parts and calls this once per part (see web/src/sb/study/run.js).
+// Study assistant: translates or summarises one part of a handout with Gemini Flash (free tier, Google AI Studio)
+// and streams the result back. The browser splits big files into small parts and sends them one at a time
+// (see web/src/sb/study/run.js).
 //
 // Request:  POST, Authorization: Bearer <student access token>, JSON body (see prompts.ts → parseRequest).
-// Response: errors before streaming are JSON {ok:false, error, message, message_en} with a 4xx/5xx status.
-//           Otherwise newline-delimited JSON events:
-//             {"type":"status","phase":"thinking"|"writing"|"fallback"}   progress
-//             {"type":"delta","text":"..."}                                output text (Markdown, or JSON for "study")
-//             {"type":"ping"}                                              keep-alive every 10 s
-//             {"type":"done","stop":"end_turn"}                            finished
-//             {"type":"error","code":"...","message":"...","message_en":"..."}
-import Anthropic from "npm:@anthropic-ai/sdk@0.129.0";
+// Response: errors before streaming are JSON {ok:false, error, message, message_en[, retry_after]} with a 4xx/5xx
+//           status. Otherwise newline-delimited JSON events:
+//             {"type":"status","phase":"thinking"|"writing"}      progress
+//             {"type":"delta","text":"..."}                        output text (Markdown, or JSON for "study")
+//             {"type":"ping"}                                      keep-alive every 10 s
+//             {"type":"done","stop":"STOP"}                        finished
+//             {"type":"error","code":"...","message":"...","message_en":"...","retry_after"?:seconds}
+//           Codes: busy (wait retry_after, then retry), daily_quota / user_limit / global_limit / not_configured
+//           (stop the job), too_long (split the part), refused / bad_input (this part failed), server.
 import { admin, cors, json, m, rateOk } from "../_shared/common.ts";
-import { InvalidRequest, parseRequest, settingsText, STUDY_SYSTEM, studySchema, TRANSLATE_SYSTEM, type StudyRequest } from "./prompts.ts";
+import { InvalidRequest, parseRequest, type StudyRequest } from "./prompts.ts";
+import { buildRequest, classifyError, finishProblem, sseJson } from "./gemini.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
 const env = (k: string, fallback: string) => Deno.env.get(k) || fallback;
-const MODEL = env("AI_MODEL", "claude-opus-5-5");
-// Calls (parts) each student may make per 24 h, and for the whole department per 24 h. Each call is a few pages.
-const USER_DAILY = Number(env("AI_USER_DAILY", "120"));
-const GLOBAL_DAILY = Number(env("AI_GLOBAL_DAILY", "1500"));
-// Stop a call a little before the platform's wall-clock limit (150 s on the free plan, 400 s on paid plans),
+const MODEL = env("AI_MODEL", "gemini-3.8-flash");
+const API = env("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com");
+// The free tier is shared by the whole Google project (roughly 10–15 requests a minute and ~1000 a day; the exact
+// numbers are shown in AI Studio). These keep the department under it.
+const USER_DAILY = Number(env("AI_USER_DAILY", "20")); // parts per student per 24 h
+const GLOBAL_DAILY = Number(env("AI_GLOBAL_DAILY", "800")); // parts for the whole department per 24 h
+const GLOBAL_RPM = Number(env("AI_GLOBAL_RPM", "10")); // parts per minute for the whole department
+// Stop a call a little before the platform's wall-clock limit (150 s on Supabase's free plan, 400 s on paid plans),
 // so the browser gets a clean "too_long" and retries with a smaller part instead of a dropped connection.
 const TIME_LIMIT_MS = Number(env("AI_TIME_LIMIT_SEC", "135")) * 1000;
-// "default" retries a request on Anthropic's recommended model if the requested one declines it
-// (Claude Opus 5.5 has a biology classifier that can misfire on life-science handouts). "off" disables it.
-const FALLBACKS = env("AI_FALLBACKS", "default");
 
-let client: Anthropic | null = null;
-function anthropic(): Anthropic | null {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) return null;
-  client ??= new Anthropic({ apiKey: key, maxRetries: 1 });
-  return client;
-}
-
-const fail = (status: number, error: string, ar: string, en: string) => json({ ok: false, error, ...m(ar, en) }, status);
+const fail = (status: number, error: string, ar: string, en: string, extra: Record<string, unknown> = {}) =>
+  json({ ok: false, error, ...m(ar, en), ...extra }, status);
 
 async function activeMember(req: Request): Promise<string | null> {
   const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
@@ -46,55 +42,12 @@ async function activeMember(req: Request): Promise<string | null> {
   return prof?.status === "active" ? data.user.id : null;
 }
 
-function buildParams(r: StudyRequest) {
-  const content: Anthropic.Beta.BetaContentBlockParam[] = [];
-  let n = r.start;
-  for (const p of r.pieces) {
-    if (p.kind === "pdf") {
-      content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: p.data } });
-    } else if (p.kind === "image") {
-      content.push({ type: "text", text: `Image ${n++}:` });
-      content.push({ type: "image", source: { type: "base64", media_type: p.media, data: p.data } });
-    } else {
-      content.push({ type: "document", source: { type: "text", media_type: "text/plain", data: p.text } });
-    }
-  }
-  content.push({ type: "text", text: `<settings>\n${settingsText(r)}\n</settings>` });
-
-  const study = r.task === "study";
-  return {
-    model: MODEL,
-    max_tokens: 32000,
-    system: [{ type: "text" as const, text: study ? STUDY_SYSTEM : TRANSLATE_SYSTEM, cache_control: { type: "ephemeral" as const } }],
-    messages: [{ role: "user" as const, content }],
-    // Translation is close to mechanical, so it runs light; question writing gets more thinking so answers are checked.
-    output_config: study
-      ? { effort: "medium" as const, format: { type: "json_schema" as const, schema: studySchema(r.formats) } }
-      : { effort: "low" as const },
-    ...(FALLBACKS === "off" ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }),
-  };
-}
-
-// Map SDK errors to a code the browser understands. Retryable: busy, server. Not retryable: bad_input, not_configured.
-function classify(err: unknown): { code: string; ar: string; en: string } {
-  if (err instanceof Anthropic.RateLimitError || err instanceof Anthropic.InternalServerError || err instanceof Anthropic.APIConnectionError) {
-    return { code: "busy", ar: "الخدمة مشغولة حالياً. راح نعيد المحاولة.", en: "The service is busy. Retrying." };
-  }
-  if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
-    return { code: "not_configured", ar: "مفتاح خدمة الذكاء الاصطناعي غير صالح. بلّغ ممثل المرحلة.", en: "The AI service key is invalid. Tell your class representative." };
-  }
-  if (err instanceof Anthropic.BadRequestError) {
-    return { code: "bad_input", ar: "ما كدرنا نقرأ هذا الجزء من الملف (ممكن يكون محمي أو تالف).", en: "This part of the file couldn't be read (it may be protected or damaged)." };
-  }
-  return { code: "server", ar: "صار خطأ أثناء المعالجة.", en: "Something went wrong while processing." };
-}
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return fail(405, "method_not_allowed", "طلب غير صالح.", "Invalid request.");
 
-  const ai = anthropic();
-  if (!ai) return fail(503, "not_configured", "ميزة الترجمة والتلخيص غير مفعّلة بعد. بلّغ ممثل المرحلة.", "Translation and summaries aren't switched on yet. Tell your class representative.");
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) return fail(503, "not_configured", "ميزة الترجمة والتلخيص غير مفعّلة بعد. بلّغ ممثل المرحلة.", "Translation and summaries aren't switched on yet. Tell your class representative.");
 
   let r: StudyRequest;
   try {
@@ -116,12 +69,16 @@ Deno.serve(async (req) => {
   if (!uid) return fail(401, "unauthorized", "انتهت الجلسة. سجّل دخول مرة ثانية.", "Your session expired. Please sign in again.");
 
   try {
-    // Department limit first, so a day when it is used up doesn't also eat into each student's own quota.
+    // Per-minute pacing first: a busy minute asks the browser to wait, without using up anyone's daily quota.
+    if (!(await rateOk("ai:min", GLOBAL_RPM, 60))) {
+      return fail(429, "busy", "خدمة Gemini المجانية مزدحمة هسه. راح نعيد المحاولة تلقائياً.", "The free Gemini service is busy. Retrying automatically.", { retry_after: 15 });
+    }
+    // Department limit before the student's own, so a used-up department day doesn't also eat into each quota.
     if (!(await rateOk("ai:all", GLOBAL_DAILY, 86400))) {
-      return fail(429, "global_limit", "وصل القسم للحد اليومي للترجمة والتلخيص. جرّب باچر.", "The department has reached today's limit. Try again tomorrow.");
+      return fail(429, "global_limit", "خلص الحد اليومي للقسم كله للترجمة والتلخيص. جرّب باچر.", "The department has used today's limit for translations and summaries. Try again tomorrow.");
     }
     if (!(await rateOk(`ai:user:${uid}`, USER_DAILY, 86400))) {
-      return fail(429, "user_limit", "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "You've reached today's limit for translations and summaries. Try again tomorrow.");
+      return fail(429, "user_limit", `خلصت حصتك اليومية (${USER_DAILY} جزء). تكدر تكمل باچر بنفس الوقت تقريباً.`, `You've used today's limit (${USER_DAILY} parts). You can continue tomorrow at about the same time.`);
     }
   } catch (e) {
     console.error("study-ai rate error", e);
@@ -136,47 +93,76 @@ Deno.serve(async (req) => {
     if (!open) return;
     try { await writer.write(enc.encode(JSON.stringify(o) + "\n")); } catch { open = false; }
   };
+  const sendFailure = (f: ReturnType<typeof classifyError>) =>
+    send({ type: "error", code: f.code, ...m(f.ar, f.en), ...(f.retryAfter ? { retry_after: f.retryAfter } : {}) });
 
   const work = (async () => {
-    const stream = ai.beta.messages.stream(buildParams(r));
+    const ctrl = new AbortController();
     let timedOut = false;
-    const stop = () => stream.abort();
-    req.signal.addEventListener("abort", stop); // student pressed stop or closed the page: stop paying for tokens
-    const timer = setTimeout(() => { timedOut = true; stream.abort(); }, TIME_LIMIT_MS);
+    const stop = () => ctrl.abort();
+    req.signal.addEventListener("abort", stop); // student pressed stop or closed the page
+    const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, TIME_LIMIT_MS);
     const ping = setInterval(() => { void send({ type: "ping" }); }, 10_000);
     const t0 = Date.now();
     try {
-      for await (const ev of stream) {
-        if (!open) { stream.abort(); break; }
-        if (ev.type === "content_block_start") {
-          const t = ev.content_block.type;
-          if (t === "thinking" || t === "redacted_thinking") await send({ type: "status", phase: "thinking" });
-          else if (t === "text") await send({ type: "status", phase: "writing" });
-          else if (t === "fallback") await send({ type: "status", phase: "fallback" });
-        } else if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
-          await send({ type: "delta", text: ev.delta.text });
+      const res = await fetch(`${API}/v1beta/models/${encodeURIComponent(MODEL)}:streamGenerateContent?alt=sse`, {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify(buildRequest(r)),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => null);
+        const f = classifyError(res.status, body);
+        if (f.log) console.error("study-ai gemini error", res.status, JSON.stringify(body)?.slice(0, 500));
+        await sendFailure(f);
+        return;
+      }
+      await send({ type: "status", phase: "thinking" });
+      let writing = false;
+      let finish: string | undefined;
+      let block: string | undefined;
+      let usage: Record<string, unknown> | undefined;
+      for await (const chunk of sseJson(res.body)) {
+        if (!open) { ctrl.abort(); break; }
+        if (chunk.error) {
+          const err = chunk.error as { code?: unknown };
+          const f = classifyError(typeof err.code === "number" ? err.code : 500, chunk);
+          if (f.log) console.error("study-ai gemini stream error", JSON.stringify(chunk).slice(0, 500));
+          await sendFailure(f);
+          return;
         }
+        const cand = (chunk.candidates as Record<string, unknown>[] | undefined)?.[0];
+        const parts = ((cand?.content as { parts?: Record<string, unknown>[] })?.parts) ?? [];
+        for (const p of parts) {
+          if (p.thought || typeof p.text !== "string" || !p.text) continue;
+          if (!writing) { writing = true; await send({ type: "status", phase: "writing" }); }
+          await send({ type: "delta", text: p.text });
+        }
+        if (cand?.finishReason) finish = String(cand.finishReason);
+        const pf = chunk.promptFeedback as { blockReason?: string } | undefined;
+        if (pf?.blockReason) block = pf.blockReason;
+        if (chunk.usageMetadata) usage = chunk.usageMetadata as Record<string, unknown>;
       }
       if (!open) return;
-      const final = await stream.finalMessage();
       console.log(JSON.stringify({
-        fn: "study-ai", task: r.task, model: final.model, stop: final.stop_reason, ms: Date.now() - t0,
-        in: final.usage.input_tokens, cache_read: final.usage.cache_read_input_tokens, out: final.usage.output_tokens,
+        fn: "study-ai", task: r.task, model: MODEL, finish, block, ms: Date.now() - t0,
+        in: usage?.promptTokenCount, out: usage?.candidatesTokenCount, thoughts: usage?.thoughtsTokenCount,
       }));
-      if (final.stop_reason === "refusal") {
-        await send({ type: "error", code: "refused", ...m("ما كدرنا نعالج هذا الجزء من الملف.", "This part of the file couldn't be processed.") });
-      } else if (final.stop_reason === "max_tokens") {
-        await send({ type: "error", code: "too_long", ...m("الجزء طويل، راح نقسمه.", "This part is long; splitting it.") });
-      } else {
-        await send({ type: "done", stop: final.stop_reason });
+      if (!finish && !block) {
+        // Gemini always ends with a finishReason; without one the answer was cut off on the way.
+        await send({ type: "error", code: "busy", retry_after: 5, ...m("وصلت النتيجة ناقصة. راح نعيد المحاولة.", "The answer arrived incomplete. Retrying.") });
+        return;
       }
+      const problem = finishProblem(finish, block);
+      if (problem) await sendFailure(problem);
+      else await send({ type: "done", stop: finish });
     } catch (err) {
       if (timedOut) {
         await send({ type: "error", code: "too_long", ...m("الجزء طويل، راح نقسمه.", "This part is long; splitting it.") });
       } else if (open && !req.signal.aborted) {
-        const c = classify(err);
-        if (c.code !== "busy" && c.code !== "bad_input") console.error("study-ai upstream error", err);
-        await send({ type: "error", code: c.code, ...m(c.ar, c.en) });
+        console.error("study-ai upstream error", err);
+        await send({ type: "error", code: "busy", retry_after: 10, ...m("انقطع الاتصال بخدمة Gemini. راح نعيد المحاولة.", "Lost the connection to Gemini. Retrying.") });
       }
     } finally {
       clearTimeout(timer);

@@ -8,13 +8,19 @@ import { groupFormats, normalizeStudy, translationText } from './data';
 
 const HISTORY_SLOT = 'ashur-bio-study-history';
 const HISTORY_MAX = 8;
-const CONCURRENCY = 3;
-export const MAX_PARTS = 80;
+// The free Gemini tier is shared by the whole department (about 10–15 requests a minute), so one part at a time.
+const CONCURRENCY = 1;
+// A student's daily allowance (AI_USER_DAILY in the study-ai function); a bigger job could never finish today.
+export const MAX_PARTS = 20;
+// How long to keep waiting out a busy free tier for one part before giving up on it.
+const MAX_BUSY_WAITS = 12;
 
 const NET = b('انقطع الاتصال أثناء المعالجة.', 'The connection dropped while processing.');
 const SERVER = b('صار خطأ بالخادم.', 'Server error.');
 const BAD_JSON = b('النتيجة وصلت ناقصة.', 'The result arrived incomplete.');
-const STOP_CODES = new Set(['not_configured', 'user_limit', 'global_limit', 'unauthorized']);
+const BUSY = b('خدمة Gemini المجانية مزدحمة جداً هسه. جرّب بعد شوية.', 'The free Gemini service is very busy right now. Try again shortly.');
+// Nothing more will work today (or at all) after these, so the whole job stops with the message.
+const STOP_CODES = new Set(['not_configured', 'user_limit', 'global_limit', 'daily_quota', 'unauthorized']);
 
 const bi = (j, fallback) => (j && typeof j.message === 'string' ? b(j.message, j.message_en || j.message) : fallback);
 let seq = 0;
@@ -141,16 +147,21 @@ export function planJob(source, options) {
   return parts;
 }
 
+export const tooBigMsg = (n) => b(
+  `هذا الطلب يحتاج ${n} جزء، وحصتك اليومية ${MAX_PARTS} جزء. اختار صفحات أقل أو أنواع أقل.`,
+  `This needs ${n} parts and your daily allowance is ${MAX_PARTS}. Choose fewer pages or fewer types.`,
+);
+
 export function startJob(options) {
   const src = state.source;
   if (!src || state.job?.status === 'running') return;
   const parts = planJob(src, options);
   if (parts.length > MAX_PARTS) {
-    throw new FileError(b(`الطلب كبير (${parts.length} جزء). اختار صفحات أقل أو أنواع أسئلة أقل.`, `This request is too big (${parts.length} parts). Choose fewer pages or fewer question types.`));
+    throw new FileError(tooBigMsg(parts.length));
   }
   const job = {
     id: uid(), createdAt: new Date().toISOString(), name: src.name, task: options.task, options,
-    parts, status: 'running', error: '', ctrl: new AbortController(), src,
+    parts, status: 'running', error: '', ctrl: new AbortController(), src, pauseUntil: 0,
   };
   state = { ...state, job };
   emit();
@@ -176,6 +187,7 @@ export function resumeJob() {
   if (!any) return;
   job.status = 'running';
   job.error = '';
+  job.pauseUntil = 0;
   job.ctrl = new AbortController();
   emit();
   pump(job);
@@ -183,6 +195,12 @@ export function resumeJob() {
 
 function pump(job) {
   if (job.status !== 'running' || state.job !== job) return;
+  // The service asked us to slow down: start nothing until the pause is over.
+  if (job.pauseUntil > Date.now()) {
+    clearTimeout(job.pauseTimer);
+    job.pauseTimer = setTimeout(() => pump(job), job.pauseUntil - Date.now() + 50);
+    return;
+  }
   let active = job.parts.filter((p) => p.status === 'running').length;
   for (const p of job.parts) {
     if (active >= CONCURRENCY) break;
@@ -223,6 +241,28 @@ function transient(part, msg) {
   part.phase = '';
   part.text = '';
   part.wait = Date.now() + (part.tries === 1 ? 2500 : 8000);
+}
+
+// 429 from the free tier (or our department-wide pacing): wait the time the server asked for, then retry the
+// same part. These waits don't count as failures; the whole job pauses so no other part jumps the queue.
+function busy(job, part, seconds, msg) {
+  part.waits = (part.waits || 0) + 1;
+  if (part.waits > MAX_BUSY_WAITS) { fail(part, msg || BUSY); return; }
+  const s = Math.min(90, Math.max(3, Number(seconds) || 15)) + Math.random() * 3; // jitter: students don't retry in lockstep
+  part.status = 'queued';
+  part.phase = '';
+  part.text = '';
+  job.pauseUntil = Date.now() + s * 1000;
+}
+
+// Study answers should be pure JSON (the request asks for it), but tolerate a stray code fence or preface.
+function parseJson(text) {
+  const t = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { return JSON.parse(t); } catch { /* fall through */ }
+  const a = t.indexOf('{');
+  const z = t.lastIndexOf('}');
+  if (a < 0 || z <= a) throw new Error('not json');
+  return JSON.parse(t.slice(a, z + 1));
 }
 
 // A part that was too long becomes two smaller ones (fewer pages, or fewer question types).
@@ -294,6 +334,7 @@ async function runPart(job, part, run, signal) {
     const code = j?.error || '';
     if (STOP_CODES.has(code) || res.status === 401) { halt(job, msg); return; }
     if (code === 'too_large' || res.status === 413) { if (!splitPart(job, part)) fail(part, msg); return; }
+    if (code === 'busy') { busy(job, part, j?.retry_after, msg); return; }
     if (res.status === 429 || res.status >= 500) { transient(part, msg); return; }
     fail(part, msg);
     return;
@@ -331,14 +372,15 @@ async function runPart(job, part, run, signal) {
       if (!splitPart(job, part)) fail(part, b('هذا الجزء طويل جداً حتى بعد التقسيم.', 'This part is too long even after splitting.'));
       return;
     }
-    if (end.code === 'busy' || end.code === 'server') { transient(part, msg); return; }
+    if (end.code === 'busy') { busy(job, part, end.retry_after, msg); return; }
+    if (end.code === 'server') { transient(part, msg); return; }
     if (STOP_CODES.has(end.code)) { halt(job, msg); return; }
     fail(part, msg); // refused, bad_input
     return;
   }
   if (job.task === 'study') {
     let parsed;
-    try { parsed = JSON.parse(part.text); } catch { transient(part, BAD_JSON); return; }
+    try { parsed = parseJson(part.text); } catch { transient(part, BAD_JSON); return; }
     part.data = normalizeStudy(parsed, part.formats);
     part.text = '';
   }

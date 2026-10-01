@@ -92,17 +92,30 @@ class MockBackend:
         self.calls = []
         self.join_code = "ASHUR-25"
         self.study_calls = []        # request bodies sent to study-ai
-        self.study_mode = "ok"       # ok | too_long_once | user_limit
+        self.study_mode = "ok"       # ok | too_long_once | user_limit | busy_once | pace_once | daily_quota
+        self._busy_done = False
         self._too_long_done = set()
 
     def study_ai(self, body):
         """Fake study-ai: answers in the same NDJSON stream format as the real function."""
         self.study_calls.append(body)
         if self.study_mode == "user_limit":
-            return 429, {"ok": False, "error": "user_limit", "message": "وصلت الحد اليومي للترجمة والتلخيص. جرّب باچر.", "message_en": "You've reached today's limit."}
+            return 429, {"ok": False, "error": "user_limit", "message": "خلصت حصتك اليومية (20 جزء). تكدر تكمل باچر بنفس الوقت تقريباً.", "message_en": "You've used today's limit (20 parts)."}
+        if self.study_mode == "pace_once" and not self._busy_done:
+            # the function's own department-wide per-minute pacing (before anything is sent to Gemini)
+            self._busy_done = True
+            return 429, {"ok": False, "error": "busy", "retry_after": 1, "message": "خدمة Gemini المجانية مزدحمة هسه. راح نعيد المحاولة تلقائياً.", "message_en": "Busy."}
         start, count = body.get("start", 1), body.get("count", 1)
         key = (body.get("task"), start, count, tuple(body.get("formats") or []), len(json.dumps(body.get("pieces"))))
         events = [{"type": "status", "phase": "thinking"}, {"type": "status", "phase": "writing"}]
+        if self.study_mode == "busy_once" and not self._busy_done:
+            # a per-minute 429 from Gemini, passed on with its retry delay
+            self._busy_done = True
+            return 200, events[:1] + [{"type": "error", "code": "busy", "retry_after": 1, "message": "خدمة Gemini المجانية مزدحمة هسه. راح نعيد المحاولة تلقائياً.", "message_en": "Busy."}]
+        if self.study_mode == "daily_quota":
+            return 200, events[:1] + [{"type": "error", "code": "daily_quota",
+                                       "message": "خلصت الحصة المجانية اليومية لخدمة Gemini للقسم. ترجع تشتغل بعد منتصف الليل بتوقيت كاليفورنيا (حوالي الساعة 10 أو 11 الصبح بتوقيت بغداد).",
+                                       "message_en": "The department's free daily Gemini quota is used up."}]
         long_text = body.get("numbering") == "part" and sum(len(x.get("text", "")) for x in body.get("pieces", [])) > 3000
         if self.study_mode == "too_long_once" and (count > 1 or long_text) and key not in self._too_long_done:
             self._too_long_done.add(key)
@@ -117,7 +130,7 @@ class MockBackend:
         else:
             data = {"topic": f"تركيب الخلية {start}", "notes": []}
             for f in body.get("formats") or []:
-                data[f] = [_study_item(f, start * 10 + i, str(start)) for i in range(2)]
+                data[f] = [_study_item(f, start * 10 + i, str(start)) for i in range(4)]
             text = json.dumps(data, ensure_ascii=False)
         half = len(text) // 2
         events += [{"type": "delta", "text": text[:half]}, {"type": "delta", "text": text[half:]}, {"type": "done", "stop": "end_turn"}]
