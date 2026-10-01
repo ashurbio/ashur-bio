@@ -8,12 +8,13 @@ import { groupFormats, normalizeStudy, translationText } from './data';
 
 const HISTORY_SLOT = 'ashur-bio-study-history';
 const HISTORY_MAX = 8;
-// The free Gemini tier is shared by the whole department (about 10–15 requests a minute), so one part at a time.
+// The free Gemini tier is shared by the whole department and is small, so one part at a time.
 const CONCURRENCY = 1;
 // A student's daily allowance (AI_USER_DAILY in the study-ai function); a bigger job could never finish today.
 export const MAX_PARTS = 20;
-// How long to keep waiting out a busy free tier for one part before giving up on it.
-const MAX_BUSY_WAITS = 12;
+// How long to keep waiting out a busy free tier for one part before giving up on it. Each retry already tries every
+// Gemini model, and failed calls still count towards Google's small free daily quota, so don't insist for long.
+const MAX_BUSY_WAITS = 6;
 
 const NET = b('انقطع الاتصال أثناء المعالجة.', 'The connection dropped while processing.');
 const SERVER = b('صار خطأ بالخادم.', 'Server error.');

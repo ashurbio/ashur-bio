@@ -136,7 +136,8 @@ Deno.test("finishProblem: finish reasons", () => {
 type Seen = { url: string; key: string | null; body: Record<string, any> };
 const seen: Seen[] = [];
 type Mode = "ok" | "json" | "safety" | "blocked" | "max_tokens" | "minute" | "daily" | "unavailable" | "badkey" | "slow" | "cut" | "stream_error"
-  | "primary_busy" | "primary_hang" | "primary_silent" | "hang" | "thinking_then_503";
+  | "primary_busy" | "primary_hang" | "primary_silent" | "hang" | "thinking_then_503"
+  | "primary_daily" | "primary_404" | "primary_thinking_503";
 let mode: Mode = "ok";
 let denyKey = ""; // rate_hit answers false for keys starting with this
 const rateKeys: string[] = []; // every key rate_hit was asked about
@@ -182,7 +183,11 @@ const fake = Deno.serve({ port: 8787, onListen() {} }, async (req) => {
     const hang = () => new Promise<Response>((resolve) => setTimeout(() => resolve(j({}, 504)), 3000));
     // Headers, then nothing.
     const silent = () => new Response(new ReadableStream({ start(c) { setTimeout(() => { try { c.close(); } catch { /* gone */ } }, 3000); } }), { headers });
+    const thinkingThen503 = () => new Response(sse([answer("x")[0], { error: { code: 503, status: "UNAVAILABLE", message: "This model is currently experiencing high demand." } }]), { headers });
     if (mode === "primary_busy") return primary ? overloaded() : fallbackAnswer();
+    if (mode === "primary_daily") return primary ? j(quota("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "26s"), 429) : fallbackAnswer();
+    if (mode === "primary_404") return primary ? j({ error: { code: 404, status: "NOT_FOUND", message: "models/x is not found" } }, 404) : fallbackAnswer();
+    if (mode === "primary_thinking_503") return primary ? thinkingThen503() : fallbackAnswer();
     if (mode === "primary_hang") return primary ? hang() : fallbackAnswer();
     if (mode === "primary_silent") return primary ? silent() : fallbackAnswer();
     if (mode === "hang") return hang();
@@ -196,8 +201,8 @@ const fake = Deno.serve({ port: 8787, onListen() {} }, async (req) => {
       case "max_tokens": return new Response(sse(answer("--- صفحة 5 ---\nنص طويل", "MAX_TOKENS")), { headers });
       case "cut": return new Response(sse(answer("--- صفحة 5 ---\nنص", null)), { headers });
       // Seen for real under heavy load: thoughts stream, then a 503 inside the stream before any answer text.
-      case "thinking_then_503": return new Response(sse([answer("x")[0], { error: { code: 503, status: "UNAVAILABLE", message: "This model is currently experiencing high demand." } }]), { headers });
-      case "stream_error": return new Response(sse([...answer("--- صفحة", null).slice(0, 1), { error: { code: 503, status: "UNAVAILABLE", message: "overloaded" } }]), { headers });
+      case "thinking_then_503": return thinkingThen503();
+      case "stream_error": return new Response(sse([...answer("--- صفحة", null).slice(0, 2), { error: { code: 503, status: "UNAVAILABLE", message: "overloaded" } }]), { headers });
       case "slow": {
         const stream = new ReadableStream({
           async start(c) {
@@ -329,13 +334,16 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals(Object.keys(g.responseJsonSchema.properties), ["topic", "summary", "mcq", "notes"]);
       assertEquals(g.thinkingConfig.thinkingLevel, "MEDIUM");
     });
-    await t.step("main model overloaded (503) → same request answered by the fallback model", async () => {
-      mode = "primary_busy";
-      const n = seen.length;
-      const r = await call(translateBody);
-      assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.5-flash" });
-      assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.5-flash"]);
-      assertEquals(seen.at(-1)!.body, seen.at(-2)!.body); // same request, only the model changes
+    await t.step("main model busy, used up, unknown, or failing while thinking → same part answered by the next model", async () => {
+      for (const m of ["primary_busy", "primary_daily", "primary_404", "primary_thinking_503"] as const) {
+        mode = m;
+        const n = seen.length;
+        const r = await call(translateBody);
+        assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.7-flash" }, m);
+        assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.7-flash"], m);
+        assertEquals(seen.at(-1)!.body, seen.at(-2)!.body); // same request, only the model changes
+        assertEquals(r.events.filter((e) => e.type === "delta").map((e) => e.text).join(""), "--- صفحة 5 ---\nمن النموذج البديل");
+      }
     });
     await t.step("main model stuck (no answer, or headers then nothing) → fallback model after AI_FIRST_BYTE_SEC", async () => {
       for (const m of ["primary_hang", "primary_silent"] as const) {
@@ -343,8 +351,8 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
         const n = seen.length;
         const t0 = Date.now();
         const r = await call(translateBody);
-        assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.5-flash" }, m);
-        assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.5-flash"]);
+        assertEquals(last(r), { type: "done", stop: "STOP", model: "gemini-3.7-flash" }, m);
+        assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.8-flash", "/v1beta/models/gemini-3.7-flash"]);
         assert(Date.now() - t0 < 1900, `${m} should not wait for the whole time limit`);
       }
     });
@@ -354,30 +362,39 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals([last(r).code, last(r).retry_after], ["busy", 30]);
       assertMatch(String(last(r).message), /ما ردّت بالوقت/);
     });
-    await t.step("Gemini per-minute 429 on both models → busy with Gemini's retry delay", async () => {
+    const chain = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"].map((x) => `/v1beta/models/${x}`);
+    await t.step("Gemini per-minute 429 on every model → busy with Gemini's retry delay", async () => {
       mode = "minute";
       const n = seen.length;
       const r = await call(translateBody);
       assertEquals([last(r).code, last(r).retry_after], ["busy", 33]);
-      assertEquals(seen.length - n, 2);
+      assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), chain);
     });
-    await t.step("Gemini per-day 429 → daily_quota with a clear Arabic message (no fallback)", async () => {
+    await t.step("every model used up for today → daily_quota with a clear Arabic message", async () => {
       mode = "daily";
       const n = seen.length;
       const r = await call(translateBody);
-      assertEquals(seen.length - n, 1);
+      assertEquals(seen.length - n, 4);
       assertEquals(last(r).code, "daily_quota");
       assertMatch(String(last(r).message), /خلصت الحصة المجانية اليومية/);
     });
-    await t.step("503 and mid-stream errors → busy", async () => {
+    await t.step("503 everywhere → busy with a 30 s back-off; error after text started → busy, no hand-over", async () => {
       mode = "unavailable";
-      assertEquals(last(await call(translateBody)).code, "busy");
+      let n = seen.length;
+      let r = await call(translateBody);
+      assertEquals([last(r).code, last(r).retry_after], ["busy", 30]);
+      assertEquals(seen.length - n, 4);
       mode = "stream_error";
-      assertEquals(last(await call(translateBody)).code, "busy");
+      n = seen.length;
+      r = await call(translateBody);
+      assertEquals(last(r).code, "busy");
+      assertEquals(seen.length - n, 1); // part of the answer was already shown, so no other model starts over
     });
-    await t.step("bad key → not_configured", async () => {
+    await t.step("bad key → not_configured at once (same for every model)", async () => {
       mode = "badkey";
+      const n = seen.length;
       assertEquals(last(await call(translateBody)).code, "not_configured");
+      assertEquals(seen.length - n, 1);
     });
     await t.step("safety stop and blocked prompt → refused; MAX_TOKENS → too_long; cut-off → busy", async () => {
       mode = "safety";
@@ -399,7 +416,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
 });
 
 Deno.test({ name: "integration: settings from env (model name, fallback off)", sanitizeOps: false, sanitizeResources: false }, async () => {
-  const proc = await startFn({ AI_MODEL: "gemini-3.7-flash", AI_FALLBACK_MODEL: "off" });
+  const proc = await startFn({ AI_MODEL: "gemini-3.7-flash", AI_FALLBACK_MODELS: "off" });
   try {
     mode = "ok";
     await call(translateBody);
@@ -408,6 +425,18 @@ Deno.test({ name: "integration: settings from env (model name, fallback off)", s
     const n = seen.length;
     assertEquals(last(await call(translateBody)).code, "busy");
     assertEquals(seen.length - n, 1);
+  } finally {
+    await stopFn(proc);
+  }
+});
+
+Deno.test({ name: "integration: custom fallback list (trimmed, duplicates dropped)", sanitizeOps: false, sanitizeResources: false }, async () => {
+  const proc = await startFn({ AI_MODEL: "gemini-3.7-flash", AI_FALLBACK_MODELS: " gemini-3.7-flash , gemini-3.5-flash-lite " });
+  try {
+    mode = "unavailable";
+    const n = seen.length;
+    assertEquals(last(await call(translateBody)).code, "busy");
+    assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), ["/v1beta/models/gemini-3.7-flash", "/v1beta/models/gemini-3.5-flash-lite"]);
   } finally {
     await stopFn(proc);
   }
