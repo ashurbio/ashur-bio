@@ -525,7 +525,7 @@ html[data-motion="off"] .spore { display: none; }
 .count-pill { font-family: var(--f-body); font-size: 12px; font-weight: 700; background: var(--surface-2); color: var(--muted); padding: 1px 9px; border-radius: 999px; margin-inline-end: auto; }
 .search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 15px; padding: 0 14px; background: var(--field); margin-bottom: 8px; color: var(--muted); }
 .search input { border: 0; background: transparent; min-height: 46px; flex: 1; min-width: 0; color: var(--ink); outline: none; }
-.search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); outline: 2px solid var(--accent); outline-offset: 2px; }
 .members { display: flex; flex-direction: column; }
 .member { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
 .member:last-child { border-bottom: 0; }
@@ -563,7 +563,7 @@ html[data-motion="off"] .spore { display: none; }
 .field input[dir="ltr"] { text-align: left; }
 .hint { font-size: 12.5px; color: var(--muted); }
 .check { display: flex !important; align-items: center; gap: 10px; font-size: 15px !important; font-weight: 500 !important; color: var(--ink) !important; min-height: 44px; }
-.check input { width: 20px; height: 20px; accent-color: var(--accent); }
+.check input { width: 24px; height: 24px; accent-color: var(--accent); }
 .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
 .swatches label { position: relative; }
 .swatches input { position: absolute; opacity: 0; inset: 0; }

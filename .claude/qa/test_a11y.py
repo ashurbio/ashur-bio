@@ -55,7 +55,9 @@ def focus_check(page, max_tabs=40):
         page.keyboard.press("Tab")
         info = page.evaluate("""() => { const e = document.activeElement; if (!e || e === document.body) return null;
           const s = getComputedStyle(e); const r = e.getBoundingClientRect();
-          const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) || (s.boxShadow && s.boxShadow !== 'none');
+          const hasRing = (st) => (st.outlineStyle !== 'none' && parseFloat(st.outlineWidth) > 0) || (st.boxShadow && st.boxShadow !== 'none');
+          // a wrapper that draws the ring with :focus-within (e.g. the search box) counts too
+          const ring = hasRing(s) || (e.parentElement && e.parentElement.matches(':focus-within') && hasRing(getComputedStyle(e.parentElement)));
           return {name: (e.getAttribute('aria-label') || e.innerText || e.tagName).trim().replace(/\\s+/g,' ').slice(0,35), ring,
                   covered: (() => { const x = r.left + r.width/2, y = r.top + r.height/2; if (y < 0 || y > innerHeight) return false; const t = document.elementFromPoint(x, y); return t && !e.contains(t) && !t.contains(e); })()}; }""")
         if not info:
