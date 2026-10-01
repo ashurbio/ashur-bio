@@ -96,10 +96,10 @@ with sync_playwright() as p:
     upload(page, FX / "lecture.pdf")
     check("pdf: source card shows 5 pages", "5 صفحة" in page.inner_text(".src"), page.inner_text(".src").replace("\n", " "))
     check("pdf: page range defaults to 1–5", page.input_value("#pg-from") == "1" and page.input_value("#pg-to") == "5")
-    check("pdf: plan shows 3 parts", "3 أجزاء" in page.inner_text(".start-row"), page.inner_text(".start-row").replace("\n", " "))
+    check("pdf: plan shows 2 parts", "2 أجزاء" in page.inner_text(".start-row"), page.inner_text(".start-row").replace("\n", " "))
     run_and_wait(page, "ترجمة")
     calls = [(c["task"], c["numbering"], c["start"], c["count"], c["total"]) for c in mb.study_calls]
-    check("pdf translate: 3 requests of 2+2+1 pages", calls == [("translate", "page", 1, 2, 5), ("translate", "page", 3, 2, 5), ("translate", "page", 5, 1, 5)], str(calls))
+    check("pdf translate: 2 requests of 4+1 pages", calls == [("translate", "page", 1, 4, 5), ("translate", "page", 5, 1, 5)], str(calls))
     first = mb.study_calls[0]
     pdf_bytes = base64.b64decode(first["pieces"][0]["data"])
     check("pdf translate: each request carries a real PDF", first["pieces"][0]["kind"] == "pdf" and pdf_bytes.startswith(b"%PDF"), f"{len(pdf_bytes)} bytes")
@@ -123,13 +123,13 @@ with sync_playwright() as p:
     run_and_wait(page, "تلخيص وأسئلة")
     scalls = mb.study_calls[n0:]
     groups = sorted({tuple(c["formats"]) for c in scalls})
-    check("study: 2 page-parts x 3 format groups = 6 requests", len(scalls) == 6, f"{len(scalls)} {groups}")
-    check("study: every format requested once per part", sorted(f for c in scalls for f in c["formats"]) == sorted(
-        ["summary", "terms", "mcq", "true_false", "lists", "reasons", "compare", "blanks", "essay"] * 2))
+    check("study: 1 page-part x 2 format groups = 2 requests", len(scalls) == 2, f"{len(scalls)} {groups}")
+    check("study: every format requested exactly once", sorted(f for c in scalls for f in c["formats"]) == sorted(
+        ["summary", "terms", "mcq", "true_false", "lists", "reasons", "compare", "blanks", "essay"]))
     tabs = page.locator(".study-out .filters .fchip")
     check("study: 9 format tabs", tabs.count() == 9)
     counts = [tabs.nth(i).locator(".cnt").inner_text() for i in range(tabs.count())]
-    check("study: 4 items per format (2 per part)", counts == ["4"] * 9, str(counts))
+    check("study: 4 items per format", counts == ["4"] * 9, str(counts))
     for i in range(tabs.count()):
         tabs.nth(i).click()
         body = page.locator(".fmt.on")
@@ -213,7 +213,7 @@ with sync_playwright() as p:
     check("photos: two thumbnails", page.locator(".thumb img").count() == 2)
     run_and_wait(page, "ترجمة")
     calls = mb.study_calls
-    check("photos: one request per photo", [(c["numbering"], c["start"], c["count"]) for c in calls] == [("image", 1, 1), ("image", 2, 1)])
+    check("photos: both photos go in one request", [(c["numbering"], c["start"], c["count"]) for c in calls] == [("image", 1, 2)], str([(c["numbering"], c["start"], c["count"]) for c in calls]))
     check("photos: sent as JPEG", calls[0]["pieces"][0]["kind"] == "image" and calls[0]["pieces"][0]["media"] == "image/jpeg"
           and base64.b64decode(calls[0]["pieces"][0]["data"])[:2] == b"\xff\xd8")
     page.locator(".src .icon-btn").click()
@@ -260,7 +260,7 @@ with sync_playwright() as p:
     page.locator(".opts-grid .fchip", has_text="ترجمة").click()
     run_and_wait(page, "ترجمة")
     calls = [(c["start"], c["count"]) for c in mb.study_calls]
-    check("too long: 2-page parts retried as single pages", calls[:2] == [(1, 2), (3, 2)] and (1, 1) in calls and (2, 1) in calls and (4, 1) in calls, str(calls))
+    check("too long: a 4-page part is split until it fits", calls[0] == (1, 4) and (1, 2) in calls and (3, 2) in calls and all((k, 1) in calls for k in range(1, 6)), str(calls))
     check("too long: all 5 pages still translated in order",
           [page.locator(".job .pg-mark").nth(i).inner_text() for i in range(page.locator(".job .pg-mark").count())] == [f"صفحة {i}" for i in range(1, 6)])
     # pasted text that is too long is split in two without losing any paragraph
@@ -279,11 +279,22 @@ with sync_playwright() as p:
 
     mb.study_mode = "user_limit"
     page.locator(".job .icon-btn").click()
+    n0 = len(mb.study_calls)
     page.locator(".start-row .btn").click()
     page.wait_for_selector(".job .notice.alert")
-    check("daily limit: student sees the message", "الحد اليومي" in page.inner_text(".job .notice.alert"))
-    check("daily limit: job stops instead of retrying", len([c for c in mb.study_calls if c]) == len(calls) + 1 or page.locator(".job[aria-busy=true]").count() == 0)
+    check("student daily limit: clear Arabic message", "خلصت حصتك اليومية (10 أجزاء)" in page.inner_text(".job .notice.alert"), page.inner_text(".job .notice.alert").replace("\n", " "))
+    page.wait_for_timeout(1500)
+    check("student daily limit: job stops instead of retrying", len(mb.study_calls) == n0 + 1 and page.locator(".job[aria-busy=true]").count() == 0, f"{len(mb.study_calls) - n0} calls")
     page.screenshot(path=str(SHOTS / "s05_limit.png"), full_page=True)
+
+    mb.study_mode = "user_tries"
+    page.locator(".job .icon-btn").click()
+    n0 = len(mb.study_calls)
+    page.locator(".start-row .btn").click()
+    page.wait_for_selector(".job .notice.alert")
+    check("student attempts cap: clear Arabic message", "حاولت هواية مرات اليوم" in page.inner_text(".job .notice.alert"), page.inner_text(".job .notice.alert").replace("\n", " "))
+    page.wait_for_timeout(1500)
+    check("student attempts cap: job stops instead of retrying", len(mb.study_calls) == n0 + 1, f"{len(mb.study_calls) - n0} calls")
     ctx.close()
 
     # ---------- dark mode + 320 px reflow on a finished result
@@ -320,7 +331,7 @@ with sync_playwright() as p:
     page.evaluate("location.hash = '#schedule'")
     page.wait_for_timeout(300)
     open_study(page)
-    check("range: page range kept after switching tabs", page.input_value("#pg-from") == "3" and "2 أجزاء" in page.inner_text(".start-row"), page.inner_text(".start-row").replace("\n", " "))
+    check("range: page range kept after switching tabs", page.input_value("#pg-from") == "3" and "1 جزء" in page.inner_text(".start-row"), page.inner_text(".start-row").replace("\n", " "))
     ctx.close()
 
     mb = MockBackend()
@@ -335,6 +346,87 @@ with sync_playwright() as p:
     check("offline: study screen shows a retry instead of a blank app",
           page.locator("main [role=alert] button", has_text="إعادة التحميل").is_visible() and page.locator(".bottom-nav").is_visible())
     page.unroute("**/assets/index-*.js")
+    ctx.close()
+
+    # ---------- free Gemini tier: one part at a time, 429 waits and retries, daily quota stops, 10-part cap
+    COUNT_INFLIGHT = """(() => {
+      window.__inflight = 0; window.__maxInflight = 0;
+      const orig = window.fetch;
+      window.fetch = async function (input, init) {
+        const u = typeof input === 'string' ? input : input.url;
+        if (!u.includes('/functions/v1/study-ai')) return orig.call(this, input, init);
+        window.__inflight++; window.__maxInflight = Math.max(window.__maxInflight, window.__inflight);
+        try {
+          await new Promise((r) => setTimeout(r, 300));   // hold each call open so overlapping calls would show
+          const res = await orig.call(this, input, init);
+          await res.clone().text();
+          return res;
+        } finally { window.__inflight--; }
+      };
+    })();"""
+    mb = MockBackend()
+    ctx = new_ctx(browser, mb)
+    ctx.add_init_script(COUNT_INFLIGHT)
+    page = ctx.new_page()
+    login(page)
+    open_study(page)
+    upload(page, FX / "lecture10.pdf")
+    page.locator(".opts-grid .fchip", has_text="ترجمة").click()
+    run_and_wait(page, "ترجمة")
+    check("free tier: one part at a time", page.evaluate("window.__maxInflight") == 1 and len(mb.study_calls) == 3,
+          f"max in flight {page.evaluate('window.__maxInflight')}, {len(mb.study_calls)} calls")
+
+    for mode, label in (("busy_once", "Gemini 429"), ("pace_once", "department pacing 429")):
+        mb.study_mode = mode
+        mb._busy_done = False
+        page.locator(".job .icon-btn").click()
+        n0 = len(mb.study_calls)
+        page.locator(".start-row .btn").click()
+        page.wait_for_selector(".job .prog-row:has-text('مزدحمة')", timeout=5000)
+        waiting = page.inner_text(".job .prog-row")
+        page.wait_for_function("() => !document.querySelector('.job[aria-busy=true]')", timeout=20000)
+        check(f"{label}: student sees a wait countdown", "نكمل بعد" in waiting, waiting.replace("\n", " "))
+        check(f"{label}: retried automatically and finished", page.locator(".job .pg-mark").count() == 10 and page.locator(".tpart.failed").count() == 0
+              and len(mb.study_calls) - n0 == 4, f"{len(mb.study_calls) - n0} calls")
+    page.screenshot(path=str(SHOTS / "s08_after_busy.png"), full_page=True)
+
+    mb.study_mode = "daily_quota"
+    page.locator(".job .icon-btn").click()
+    n0 = len(mb.study_calls)
+    page.locator(".start-row .btn").click()
+    page.wait_for_selector(".job .notice.alert")
+    msg = page.inner_text(".job .notice.alert")
+    check("Gemini daily quota: clear Arabic message", "خلصت الحصة المجانية اليومية" in msg and "بتوقيت بغداد" in msg, msg.replace("\n", " "))
+    page.wait_for_timeout(1500)
+    check("Gemini daily quota: job stops, no retries", len(mb.study_calls) == n0 + 1 and page.locator(".job[aria-busy=true]").count() == 0)
+    page.screenshot(path=str(SHOTS / "s09_daily_quota.png"), full_page=True)
+    ctx.close()
+
+    mb = MockBackend()
+    ctx = new_ctx(browser, mb)
+    page = ctx.new_page()
+    login(page)
+    open_study(page)
+    upload(page, FX / "book.pdf")
+    page.locator(".opts-grid .fchip", has_text="ترجمة").click()
+    alert = lambda: page.inner_text(".study [role=alert]").replace("\n", " ") if page.locator(".study [role=alert]").count() else ""
+    check("cap: 80 pages translate = 20 parts, more than the daily 10, can't start", page.locator(".start-row .btn").is_disabled()
+          and "يحتاج 20 جزء، وحصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
+    page.fill("#pg-to", "40")
+    page.wait_for_timeout(200)
+    check("cap: 40 pages translate in exactly 10 parts", "10 أجزاء" in page.inner_text(".start-row") and page.locator(".start-row .btn").is_enabled(),
+          page.inner_text(".start-row").replace("\n", " "))
+    page.fill("#pg-to", "44")
+    page.wait_for_timeout(200)
+    check("cap: 44 pages (11 parts) can't start", page.locator(".start-row .btn").is_disabled()
+          and "يحتاج 11 جزء، وحصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
+    page.fill("#pg-to", "40")
+    page.locator(".opts-grid .fchip", has_text="تلخيص وأسئلة").click()
+    page.locator(".opt-row .link", has_text="الكل").click()
+    page.locator(".opts-grid .fchip", has_text="شامل").click()
+    page.wait_for_timeout(200)
+    check("cap: every question type, comprehensive, on 40 pages can't start", page.locator(".start-row .btn").is_disabled()
+          and "حصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
     ctx.close()
 
     # ---------- desktop

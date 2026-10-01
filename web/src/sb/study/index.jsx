@@ -10,7 +10,7 @@ import { b, Bi, flat, split } from '../bi';
 import { agoBi, lsGet, lsSet } from '../util';
 import { FileError, LIMITS, iso, readFiles, removeImage, textSource } from './files';
 import {
-  useStudy, setSource, setRange, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS,
+  useStudy, setSource, setRange, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS, partsAr, tooBigMsg,
 } from './run';
 import { FORMATS, FORMAT_META, DEPTHS, studyText, translationText } from './data';
 import { Markdown } from './md';
@@ -24,7 +24,6 @@ const PHASE = {
   sending: b('يرسل الجزء…', 'Sending…'),
   thinking: b('يقرأ ويحلّل…', 'Reading and analysing…'),
   writing: b('يكتب…', 'Writing…'),
-  fallback: b('يكمل بنموذج بديل…', 'Continuing with a backup model…'),
 };
 
 function Chips({ label, options, value, onChange, multi = false }) {
@@ -178,6 +177,16 @@ function JobPanel({ job, source, onSummarise }) {
 
   useEffect(() => { if (running) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [job.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // While the free tier asks us to wait, tick once a second so the countdown moves.
+  const [, tick] = useState(0);
+  const paused = running && job.pauseUntil > Date.now();
+  useEffect(() => {
+    if (!paused) return undefined;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [paused]);
+  const waitSec = paused ? Math.max(1, Math.ceil((job.pauseUntil - Date.now()) / 1000)) : 0;
+
   const copy = async () => {
     try { await navigator.clipboard.writeText(text()); notify(b('تم النسخ', 'Copied')); } catch { notify(b('ما كدرنا ننسخ. جرّب التنزيل.', 'Couldn\'t copy. Try downloading instead.')); }
   };
@@ -210,7 +219,9 @@ function JobPanel({ job, source, onSummarise }) {
           <div className="prog-row">
             <p className="note" aria-live="polite">
               <Bi t={b(`تم ${done} من ${total} أجزاء`, `${done} of ${total} parts done`)} inline />
-              {active?.phase && PHASE[active.phase] ? <> · <Bi t={PHASE[active.phase]} inline /></> : null}
+              {paused
+                ? <> · <Bi t={b(`خدمة Gemini المجانية مزدحمة، نكمل بعد ${waitSec} ثانية…`, `The free Gemini service is busy; continuing in ${waitSec} s…`)} inline /></>
+                : active?.phase && PHASE[active.phase] ? <> · <Bi t={PHASE[active.phase]} inline /></> : null}
             </p>
             <button className="btn ghost sm" type="button" onClick={stopJob}><Square size={14} aria-hidden="true" /><Bi t={b('إيقاف', 'Stop')} /></button>
           </div>
@@ -375,10 +386,10 @@ export default function Study() {
             {opts.task === 'translate' ? <Languages size={17} aria-hidden="true" /> : <Sparkles size={17} aria-hidden="true" />}
             <Bi t={opts.task === 'translate' ? b('ابدأ الترجمة', 'Start translating') : b('ابدأ التلخيص', 'Start')} />
           </button>
-          {source && parts && !tooBig ? <span className="note"><Bi t={b(`راح ينقسم إلى ${parts} ${parts === 1 ? 'جزء' : 'أجزاء'}`, `${parts} part${parts === 1 ? '' : 's'}`)} inline /></span> : null}
+          {source && parts && !tooBig ? <span className="note"><Bi t={b(`راح ينقسم إلى ${partsAr(parts)}`, `${parts} part${parts === 1 ? '' : 's'}`)} inline /></span> : null}
           {!source ? <span className="note"><Bi t={b('اختار ملف أول.', 'Choose a file first.')} inline /></span> : null}
         </div>
-        {tooBig ? <p className="form-err" role="alert"><Bi t={b(`الطلب كبير (${parts} جزء). اختار صفحات أقل أو أنواع أقل.`, `Too big (${parts} parts). Choose fewer pages or fewer types.`)} /></p> : null}
+        {tooBig ? <p className="form-err" role="alert"><Bi t={tooBigMsg(parts)} /></p> : null}
         {planErr ? <p className="form-err" role="alert"><Bi t={planErr} /></p> : null}
       </article>
 
@@ -403,8 +414,8 @@ export default function Study() {
       ) : null}
 
       <p className="note no-print">
-        <Bi t={b('الملف يُرسل إلى خدمة Claude من Anthropic حتى يُعالج، وما ينحفظ بخادم القسم. الذكاء الاصطناعي دقيق بس ممكن يغلط أحياناً، لهذا كل نقطة وسؤال عليه رقم الصفحة حتى تراجعه بالملزمة.',
-          'Files are sent to Anthropic\'s Claude service for processing and aren\'t stored on the department\'s server. The AI is accurate but can still make mistakes, so every point and question shows its page number for you to check against the handout.')} />
+        <Bi t={b(`الملف يُرسل إلى خدمة Gemini من Google حتى يُعالج، وما ينحفظ بخادم القسم. لأنها الخطة المجانية، Google تكدر تستخدم المحتوى لتحسين خدماتها، فلا ترفع ملفات بيها معلومات شخصية. حصة كل طالب ${partsAr(MAX_PARTS)} باليوم. الذكاء الاصطناعي دقيق بس ممكن يغلط أحياناً، لهذا كل نقطة وسؤال عليه رقم الصفحة حتى تراجعه بالملزمة.`,
+          `Files are sent to Google's Gemini service for processing and aren't stored on the department's server. Because this is the free tier, Google may use the content to improve its services, so don't upload files with personal information. Each student can process ${MAX_PARTS} parts a day. The AI is accurate but can still make mistakes, so every point and question shows its page number for you to check against the handout.`)} />
       </p>
     </div>
   );

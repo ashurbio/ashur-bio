@@ -23,7 +23,7 @@ export const DEPTHS = [
 ];
 
 const DEPTH_MULT = { brief: 0.6, standard: 1, full: 1.8 };
-const GROUP_BUDGET = 7;
+const GROUP_BUDGET = 14; // Gemini Flash writes fast, so most selections fit in one request per part
 
 // Several formats share one request until their combined weight would make it too long.
 export function groupFormats(formats, depth) {

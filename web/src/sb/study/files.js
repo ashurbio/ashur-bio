@@ -305,13 +305,14 @@ export function releaseSource(source) {
 
 /* ---------------------------------------------------------------- planning parts */
 
-// How much one request should carry. Translation output is about as long as the input, so its parts are small;
-// study output is shorter, so its parts are bigger (and smaller again when the student asks for a lot per page).
+// How much one request should carry. Every request counts against the free Gemini quota (a student has 20 parts a
+// day), so parts are as big as the time limit allows: Gemini Flash reads a PDF page as only 258 tokens and writes
+// fast. Translation output is about as long as the input, so its parts are smaller; study output is shorter.
 function sizes(task, depth) {
-  if (task === 'translate') return { pages: 2, images: 1, chars: 4500 };
-  if (depth === 'full') return { pages: 2, images: 2, chars: 7000 };
-  if (depth === 'brief') return { pages: 4, images: 4, chars: 14000 };
-  return { pages: 3, images: 3, chars: 10000 };
+  if (task === 'translate') return { pages: 4, images: 2, chars: 9000 };
+  if (depth === 'full') return { pages: 5, images: 3, chars: 12000 };
+  if (depth === 'brief') return { pages: 12, images: 6, chars: 30000 };
+  return { pages: 8, images: 4, chars: 20000 };
 }
 
 // Split text into pieces of at most `max` characters, at paragraph or sentence boundaries.

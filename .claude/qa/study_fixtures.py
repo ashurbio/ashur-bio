@@ -64,6 +64,8 @@ def make_all(folder):
     d = Path(folder)
     d.mkdir(parents=True, exist_ok=True)
     make_pdf(d / "lecture.pdf", 5)
+    make_pdf(d / "lecture10.pdf", 10)
+    make_pdf(d / "book.pdf", 100)
     make_docx(d / "notes.docx")
     make_pptx(d / "slides.pptx")
     (d / "old.doc").write_bytes(b"\xd0\xcf\x11\xe0 old word file")

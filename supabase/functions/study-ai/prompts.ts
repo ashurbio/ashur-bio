@@ -1,5 +1,5 @@
 // Prompts, output schemas and request validation for the study assistant (translate / summarise a handout).
-// Pure functions only, so they can be unit-tested without Supabase or the Claude API.
+// Pure functions only, so they can be unit-tested without Supabase or the Gemini API.
 
 export const TASKS = ["translate", "study"] as const;
 export const FORMATS = ["summary", "terms", "mcq", "true_false", "lists", "reasons", "compare", "blanks", "essay"] as const;
@@ -101,7 +101,7 @@ export function parseRequest(body: unknown): StudyRequest {
 }
 
 /* ------------------------------------------------------------------ system prompts
-   Kept identical across requests of the same task so they are served from the prompt cache. */
+   Kept identical across requests of the same task. */
 
 export const TRANSLATE_SYSTEM = `You are an expert academic translator working for Life Sciences (biology) students at Ashur University in Iraq. You translate lecture handouts ("ملازم"), slides and notes from one language into another, faithfully and completely.
 
