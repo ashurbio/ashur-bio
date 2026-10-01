@@ -53,9 +53,12 @@ export function loginEmail(username: string): string {
   return `${username}@${LOGIN_DOMAIN}`;
 }
 
+// cf-connecting-ip is set by Cloudflare (the gateway mirrors it as x-real-ip), so callers can't forge it;
+// x-forwarded-for is whatever the caller sent, so it is only a last resort.
 export function clientIp(req: Request): string {
-  const xf = req.headers.get("x-forwarded-for") || "";
-  return (xf.split(",")[0] || req.headers.get("cf-connecting-ip") || "unknown").trim();
+  const ip = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") ||
+    (req.headers.get("x-forwarded-for") || "").split(",")[0];
+  return (ip || "unknown").trim();
 }
 
 export async function rateOk(key: string, limit: number, windowSeconds: number): Promise<boolean> {
