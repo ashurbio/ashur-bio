@@ -31,6 +31,11 @@ npm run dev      # يفتح نسخة تجريبية على localhost
 npm run build    # يطلع الموقع الجاهز بمجلد dist
 ```
 
+## فحص التطبيق قبل النشر
+
+مجلد `.claude/qa` بيه فحوصات تلقائية (Playwright) تشغّل كل الشاشات على سيرفر وهمي، وتفحص سهولة الاستخدام (axe) والسرعة (Lighthouse).
+طريقة التشغيل مكتوبة بـ `.claude/qa/README.md`. ومجلد `.claude/skills` بيه مهارات Claude الخاصة بالتصميم والفحص والسرعة.
+
 ## تحديث الموقع المنشور (GitHub Pages)
 
 1. `npm run build` داخل `web`.
