@@ -1,12 +1,11 @@
-/* Layout: RTL app shell over a fixed animated "deep-sea bioluminescence" scene. Every working surface is frosted glass;
-   the scene (aurora light, a turning DNA strand, a breathing cell, rising spores) is what the glass refracts.
+/* Layout: RTL app shell over a fixed GPU-drawn backdrop (src/sb/backdrop.js): a slow brand-colour field with
+   topographic contour lines and a light that follows the pointer. Every working surface is frosted glass over it.
    Every label is bilingual: Arabic on top, a smaller English line underneath (see .bi). */
 :root {
-  --bg-base: #E9F1FF;
-  --orb1: rgba(56,189,248,.64); --orb2: rgba(99,102,241,.46); --orb3: rgba(45,212,191,.46); --orb4: rgba(244,114,182,.36);
-  --veil1: rgba(56,189,248,.42); --veil2: rgba(139,92,246,.34);
-  --helix-a: #1D64E8; --helix-b: #0EA5C9; --spore: rgba(37,99,235,.75);
-  --bub: rgba(255,255,255,.85);
+  --bg-base: #EEF3FB;
+  /* backdrop palette, read by backdrop.js: base, three washes, pointer light, contour line colour/alpha, grain */
+  --sg-base: #EEF3FB; --sg-1: #ADC7FA; --sg-2: #CBC3F8; --sg-3: #AAE4F3; --sg-hi: #D8E6FF;
+  --sg-line: #1D64E8; --sg-line-a: .12; --sg-grain: 2;
 
   --glass: rgba(255,255,255,.50); --glass-hi: rgba(255,255,255,.74); --glass-strong: rgba(255,255,255,.90);
   --glass-line: rgba(255,255,255,.80); --sheen: rgba(255,255,255,.55);
@@ -33,10 +32,8 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg-base: #050A1A;
-    --orb1: rgba(14,165,233,.36); --orb2: rgba(99,102,241,.40); --orb3: rgba(20,184,166,.24); --orb4: rgba(236,72,153,.24);
-    --veil1: rgba(56,189,248,.26); --veil2: rgba(167,139,250,.26);
-    --helix-a: #7CC8FF; --helix-b: #B39DFF; --spore: rgba(155,216,255,.9);
-    --bub: rgba(255,255,255,.24);
+    --sg-base: #050A1A; --sg-1: #14347F; --sg-2: #2E2180; --sg-3: #0A4F6B; --sg-hi: #3270FF;
+    --sg-line: #8CCBFF; --sg-line-a: .12; --sg-grain: 3;
 
     --glass: rgba(14,24,50,.54); --glass-hi: rgba(255,255,255,.10); --glass-strong: rgba(10,17,36,.92);
     --glass-line: rgba(255,255,255,.14); --sheen: rgba(255,255,255,.09);
@@ -80,134 +77,17 @@ p { margin: 0; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
 /* ---------- scene (fixed, behind everything) ----------
-   Everything animates with transform/opacity only, so it stays on the GPU. */
-.scene { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--bg-base); }
-.orb {
-  position: absolute; border-radius: 50%; width: 64vmax; height: 64vmax;
-  background: radial-gradient(circle at 50% 50%, var(--o) 0, transparent 66%);
-  will-change: transform; animation: drift 28s ease-in-out infinite alternate;
+   The canvas fades in over a CSS version of the same palette, which is also the whole backdrop without WebGL. */
+.scene {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+  background:
+    radial-gradient(75vmax 55vmax at 92% 0%, var(--sg-1), transparent 70%),
+    radial-gradient(75vmax 55vmax at 0% 100%, var(--sg-2), transparent 70%),
+    radial-gradient(45vmax 30vmax at 22% 48%, color-mix(in srgb, var(--sg-3) 60%, transparent), transparent 70%),
+    var(--sg-base);
 }
-.o1 { --o: var(--orb1); top: -26vmax; right: -18vmax; }
-.o2 { --o: var(--orb2); bottom: -30vmax; left: -22vmax; animation-name: drift2; animation-duration: 36s; animation-delay: -12s; }
-.o3 { --o: var(--orb3); top: 26%; left: 18%; width: 46vmax; height: 46vmax; animation-duration: 42s; animation-delay: -22s; }
-.o4 { --o: var(--orb4); top: 56%; right: 6%; width: 36vmax; height: 36vmax; animation-name: drift2; animation-duration: 32s; animation-delay: -6s; }
-@keyframes drift {
-  0% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(-10vmax, 8vmax, 0) scale(1.18); }
-  100% { transform: translate3d(6vmax, -6vmax, 0) scale(.94); }
-}
-@keyframes drift2 {
-  0% { transform: translate3d(0, 0, 0) scale(1.05); }
-  50% { transform: translate3d(9vmax, -7vmax, 0) scale(1.14); }
-  100% { transform: translate3d(-7vmax, 5vmax, 0) scale(.92); }
-}
-
-/* aurora veils: two soft light curtains sweeping across */
-.veil {
-  position: absolute; left: -30%; width: 160%; height: 34vmax; opacity: .45; will-change: transform, opacity;
-  background: radial-gradient(50% 50% at 50% 50%, var(--v), transparent 72%);
-}
-.v1 { --v: var(--veil1); top: 6%; transform: rotate(-16deg); animation: veil 22s ease-in-out infinite alternate; }
-.v2 { --v: var(--veil2); top: 50%; height: 28vmax; transform: rotate(9deg); animation: veil2 30s ease-in-out -9s infinite alternate; }
-@keyframes veil {
-  0% { transform: translate3d(-8%, 0, 0) rotate(-16deg) scaleY(.8); opacity: .22; }
-  50% { opacity: .8; }
-  100% { transform: translate3d(8%, 7%, 0) rotate(-9deg) scaleY(1.18); opacity: .36; }
-}
-@keyframes veil2 {
-  0% { transform: translate3d(7%, 0, 0) rotate(9deg) scaleY(1.1); opacity: .3; }
-  50% { opacity: .75; }
-  100% { transform: translate3d(-9%, -6%, 0) rotate(14deg) scaleY(.8); opacity: .2; }
-}
-
-/* DNA double helix that keeps turning: each rung is two beads and a bar, phase-shifted by --i */
-.helix { position: absolute; top: 0; bottom: 0; left: 1.5%; width: 150px; --amp: 46px; opacity: .8; }
-.rung { position: absolute; left: 0; right: 0; top: calc(var(--i) * 3.846%); height: 0; }
-.rung b {
-  position: absolute; left: 50%; top: -1px; height: 2px; width: calc(var(--amp) * 2); margin-left: calc(var(--amp) * -1); border-radius: 2px;
-  background: linear-gradient(90deg, var(--helix-a), var(--helix-b)); opacity: .42;
-  transform: scaleX(var(--ax)); animation: bar 7s cubic-bezier(.45, 0, .55, 1) calc(var(--i) * -.5s) infinite;
-}
-.rung i {
-  position: absolute; left: 50%; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; will-change: transform;
-}
-.rung .d1 {
-  background: radial-gradient(circle at 35% 30%, #fff, var(--helix-a) 58%); box-shadow: 0 0 18px var(--helix-a);
-  transform: translateX(calc(var(--amp) * var(--sx))) scale(var(--z1));
-  animation: sway 7s cubic-bezier(.45, 0, .55, 1) calc(var(--i) * -.5s) infinite;
-}
-.rung .d2 {
-  background: radial-gradient(circle at 35% 30%, #fff, var(--helix-b) 58%); box-shadow: 0 0 18px var(--helix-b);
-  transform: translateX(calc(var(--amp) * var(--sx) * -1)) scale(var(--z2));
-  animation: sway 7s cubic-bezier(.45, 0, .55, 1) calc(var(--i) * -.5s - 3.5s) infinite;
-}
-@keyframes sway {
-  0% { transform: translateX(0) scale(1.3); opacity: 1; }
-  25% { transform: translateX(var(--amp)) scale(.95); opacity: .75; }
-  50% { transform: translateX(0) scale(.6); opacity: .4; }
-  75% { transform: translateX(calc(var(--amp) * -1)) scale(.95); opacity: .75; }
-  100% { transform: translateX(0) scale(1.3); opacity: 1; }
-}
-@keyframes bar { 0%, 50%, 100% { transform: scaleX(.03); } 25%, 75% { transform: scaleX(1); } }
-
-/* a cell that breathes: squashing membrane, drifting nucleus, orbiting organelles */
-.cell { position: absolute; width: min(48vmin, 440px); aspect-ratio: 1; right: -7vmin; bottom: 5vmin; opacity: .75; }
-.cell-in {
-  position: absolute; inset: 0; border-radius: 47% 53% 50% 50% / 52% 46% 54% 48%;
-  border: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
-  background: radial-gradient(circle at 38% 32%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 68%);
-  box-shadow: inset 0 0 50px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 60px color-mix(in srgb, var(--accent) 12%, transparent);
-  animation: wobble 14s ease-in-out infinite;
-}
-.cell-in::after { content: ""; position: absolute; inset: 9%; border-radius: inherit; border: 1.3px solid color-mix(in srgb, var(--accent) 34%, transparent); }
-@keyframes wobble {
-  0%, 100% { transform: rotate(0) scale(1, 1); }
-  25% { transform: rotate(7deg) scale(1.05, .95); }
-  50% { transform: rotate(0) scale(.96, 1.05); }
-  75% { transform: rotate(-7deg) scale(1.04, .97); }
-}
-.nucleus {
-  position: absolute; left: 34%; top: 30%; width: 34%; aspect-ratio: 1; border-radius: 50%;
-  background: radial-gradient(circle at 36% 32%, color-mix(in srgb, #fff 45%, var(--accent)), color-mix(in srgb, var(--accent) 38%, transparent) 62%, transparent 100%);
-  border: 1.5px solid color-mix(in srgb, var(--accent) 52%, transparent); animation: nuc 9s ease-in-out infinite alternate;
-}
-@keyframes nuc { to { transform: translate3d(9%, 7%, 0) scale(1.07); } }
-.orbit { position: absolute; inset: 0; animation: spin 46s linear infinite; }
-.org { position: absolute; border-radius: 50%; border: 1.4px solid color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.g1 { width: 13%; height: 7%; left: 14%; top: 24%; transform: rotate(-24deg); }
-.g2 { width: 11%; height: 6%; left: 20%; top: 68%; transform: rotate(30deg); }
-.g3 { width: 12%; height: 6.5%; right: 12%; top: 72%; transform: rotate(-18deg); }
-
-/* plankton-like spores and glass bubbles rising through the scene */
-.spore {
-  position: absolute; left: var(--x); bottom: -3vh; width: var(--s); height: var(--s); border-radius: 50%; opacity: 0; will-change: transform, opacity;
-  background: radial-gradient(circle, #fff 0, var(--spore) 45%, transparent 72%); box-shadow: 0 0 calc(var(--s) * 3) var(--spore);
-  animation: rise var(--d) linear var(--t) infinite;
-}
-.bubble {
-  position: absolute; left: var(--x); bottom: calc(var(--s) * -1 - 12px); width: var(--s); height: var(--s); border-radius: 50%; --w: 34px;
-  border: 1px solid var(--glass-line); will-change: transform, opacity;
-  background: radial-gradient(circle at 30% 26%, var(--bub), rgba(255,255,255,.06) 52%, transparent 72%);
-  box-shadow: inset -6px -8px 18px rgba(255,255,255,.10); animation: rise var(--d) ease-in-out var(--t) infinite;
-}
-@keyframes rise {
-  0% { transform: translate3d(0, 0, 0); opacity: 0; }
-  10% { opacity: .9; }
-  50% { transform: translate3d(var(--w), -55vh, 0); }
-  90% { opacity: .8; }
-  100% { transform: translate3d(calc(var(--w) * -.6), -114vh, 0); opacity: 0; }
-}
-
-@media (max-width: 899px) {
-  .helix { left: -58px; opacity: .65; }
-  .rung:nth-child(even) { display: none; }
-  .spore.alt { display: none; }
-  .bubble.alt { display: none; }
-  .cell { width: 62vw; right: -16vw; bottom: 12vh; opacity: .55; }
-}
-/* the person can switch the motion off (Account → Appearance); the scene then stays as a still picture */
-html[data-motion="off"] .scene * { animation: none !important; }
-html[data-motion="off"] .spore { display: none; }
+.scene-gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity 1.2s ease; }
+.scene-gl.on { opacity: 1; }
 
 /* ---------- the glass ---------- */
 .panel, .ecard, .ann, .mat, .auth-card, .hero, .side, .topbar, .bottom-nav {

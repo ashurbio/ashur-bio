@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { SWATCHES, safeUrl } from './util';
 import { b, split, flat, Bi, T } from './bi';
+import { startBackdrop } from './backdrop';
 
 export function CellMark({ size = 36 }) {
   return (
@@ -16,45 +17,16 @@ export function CellMark({ size = 36 }) {
   );
 }
 
-// Seeded so the scene is identical on every load (no random layout jumps).
-const seeded = (i, n) => { const x = Math.sin(i * 12.9898 + n * 78.233) * 43758.5453; return x - Math.floor(x); };
-// Static pose of each rung (used when motion is off or reduced) and the start phase of the animation.
-const RUNGS = Array.from({ length: 26 }, (_, i) => {
-  const a = i * 0.449; // one full turn every 14 rungs
-  return { i, sx: Math.sin(a).toFixed(3), ax: Math.abs(Math.sin(a)).toFixed(3), z1: (0.95 + 0.35 * Math.cos(a)).toFixed(3), z2: (0.95 - 0.35 * Math.cos(a)).toFixed(3) };
-});
-const SPORES = Array.from({ length: 18 }, (_, i) => ({
-  x: 2 + Math.round(seeded(i, 1) * 96), s: 3 + Math.round(seeded(i, 2) * 7), d: 20 + Math.round(seeded(i, 3) * 24),
-  t: -Math.round(seeded(i, 4) * 44), w: Math.round((seeded(i, 5) - 0.5) * 90),
-}));
-const BUBBLES = [
-  { x: 38, s: 92, d: 34, t: -6 }, { x: 12, s: 46, d: 26, t: -18 }, { x: 68, s: 128, d: 44, t: -28 },
-  { x: 90, s: 58, d: 30, t: -12 }, { x: 52, s: 34, d: 24, t: -2 },
-];
-
-// Fixed decorative scene behind the whole app. Everything moves with transform/opacity only (GPU-cheap):
-// aurora light, drifting orbs, a rotating DNA strand, a breathing cell, rising spores and glass bubbles.
+// Fixed decorative scene behind the whole app. The canvas is drawn on the GPU (see backdrop.js); the CSS gradient
+// on .scene shows until the first frame and stays as the backdrop wherever WebGL is unavailable.
 export function Backdrop() {
+  const canvas = useRef(null);
+  useEffect(() => {
+    try { return startBackdrop(canvas.current) || undefined; } catch (e) { console.warn('backdrop', e); return undefined; } // decoration must never break the app
+  }, []);
   return (
     <div className="scene" aria-hidden="true">
-      <i className="orb o1" /><i className="orb o2" /><i className="orb o3" /><i className="orb o4" />
-      <i className="veil v1" /><i className="veil v2" />
-      <div className="helix">
-        {RUNGS.map((r) => (
-          <span key={r.i} className="rung" style={{ '--i': r.i, '--sx': r.sx, '--ax': r.ax, '--z1': r.z1, '--z2': r.z2 }}><b /><i className="d1" /><i className="d2" /></span>
-        ))}
-      </div>
-      <div className="cell">
-        <div className="cell-in" />
-        <i className="nucleus" />
-        <span className="orbit"><i className="org g1" /><i className="org g2" /><i className="org g3" /></span>
-      </div>
-      {SPORES.map((p, i) => (
-        <i key={i} className={i % 2 ? 'spore alt' : 'spore'} style={{ '--x': `${p.x}%`, '--s': `${p.s}px`, '--d': `${p.d}s`, '--t': `${p.t}s`, '--w': `${p.w}px` }} />
-      ))}
-      {BUBBLES.map((p, i) => (
-        <i key={i} className={i >= 3 ? 'bubble alt' : 'bubble'} style={{ '--x': `${p.x}%`, '--s': `${p.s}px`, '--d': `${p.d}s`, '--t': `${p.t}s` }} />
-      ))}
+      <canvas ref={canvas} className="scene-gl" />
     </div>
   );
 }
