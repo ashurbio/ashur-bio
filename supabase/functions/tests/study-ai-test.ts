@@ -287,7 +287,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       denyKey = "";
       assertEquals(seen.length, n);
     });
-    await t.step("student's 20 parts: charged once Gemini answers, so a used-up day stops the part", async () => {
+    await t.step("student's 10 daily parts: charged once Gemini answers, so a used-up day stops the part", async () => {
       mode = "ok";
       denyKey = "ai:user:";
       const r = await call(translateBody);
@@ -295,7 +295,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals(r.status, 200);
       assertEquals(r.events.filter((e) => e.type === "delta").length, 0); // nothing of the answer is shown
       assertEquals(last(r).code, "user_limit");
-      assertMatch(String(last(r).message), /خلصت حصتك اليومية \(20 جزء\)/);
+      assertMatch(String(last(r).message), /خلصت حصتك اليومية \(10 أجزاء\)/);
     });
     await t.step("a busy model doesn't use up the student's parts; an answered part uses one", async () => {
       for (const m of ["unavailable", "thinking_then_503"] as const) {
@@ -362,7 +362,8 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       assertEquals([last(r).code, last(r).retry_after], ["busy", 30]);
       assertMatch(String(last(r).message), /ما ردّت بالوقت/);
     });
-    const chain = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"].map((x) => `/v1beta/models/${x}`);
+    const chain = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+      .map((x) => `/v1beta/models/${x}`);
     await t.step("Gemini per-minute 429 on every model → busy with Gemini's retry delay", async () => {
       mode = "minute";
       const n = seen.length;
@@ -374,7 +375,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       mode = "daily";
       const n = seen.length;
       const r = await call(translateBody);
-      assertEquals(seen.length - n, 4);
+      assertEquals(seen.slice(n).map((x) => x.url.split(":")[0]), chain);
       assertEquals(last(r).code, "daily_quota");
       assertMatch(String(last(r).message), /خلصت الحصة المجانية اليومية/);
     });
@@ -383,7 +384,7 @@ Deno.test({ name: "integration: auth, limits, streaming, errors", sanitizeOps: f
       let n = seen.length;
       let r = await call(translateBody);
       assertEquals([last(r).code, last(r).retry_after], ["busy", 30]);
-      assertEquals(seen.length - n, 4);
+      assertEquals(seen.length - n, chain.length);
       mode = "stream_error";
       n = seen.length;
       r = await call(translateBody);

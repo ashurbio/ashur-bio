@@ -22,8 +22,9 @@ const env = (k: string, fallback: string) => Deno.env.get(k) || fallback;
 const MODEL = env("AI_MODEL", "gemini-3.8-flash");
 // Older stable Flash models, tried in order when the one before is busy ("high demand" 503), stuck, or has used up its
 // free day. Each model has its own free quota (Google counts it per project *per model*, about 20 requests a day for
-// a Flash model), so the chain also multiplies what the department gets for free. "off" = main model only.
-const FALLBACKS = env("AI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash");
+// a Flash model), so the chain also multiplies what the department gets for free. Flash-Lite comes last: lighter
+// answers, but one more free quota before students see "used up for today". "off" = main model only.
+const FALLBACKS = env("AI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite");
 const MODELS = [...new Set([MODEL, ...(FALLBACKS === "off" ? [] : FALLBACKS.split(",").map((x) => x.trim()).filter(Boolean))])];
 const API = env("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com");
 // Under heavy load a request can sit in Google's queue with no answer and no error. If a model hasn't started answering
@@ -31,13 +32,16 @@ const API = env("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com");
 const FIRST_BYTE_MS = Number(env("AI_FIRST_BYTE_SEC", "40")) * 1000;
 // Google's free tier is shared by the whole project and counted per model; the exact numbers are in AI Studio (on
 // 1 Oct 2026 it answered "limit: 20" requests a day for gemini-3.8-flash). These are the department's own limits.
-const USER_DAILY = Number(env("AI_USER_DAILY", "20")); // parts per student per 24 h (charged once Gemini answers)
-const USER_TRIES = Number(env("AI_USER_TRIES", "60")); // calls per student per 24 h, retries included
+const USER_DAILY = Number(env("AI_USER_DAILY", "10")); // parts per student per 24 h (charged once Gemini answers)
+const USER_TRIES = Number(env("AI_USER_TRIES", "30")); // calls per student per 24 h, retries included
 const GLOBAL_DAILY = Number(env("AI_GLOBAL_DAILY", "800")); // parts for the whole department per 24 h
 const GLOBAL_RPM = Number(env("AI_GLOBAL_RPM", "10")); // parts per minute for the whole department
 // Stop a call a little before the platform's wall-clock limit (150 s on Supabase's free plan, 400 s on paid plans),
 // so the browser gets a clean "too_long" (split the part) or "busy" (nothing came back) instead of a dropped connection.
 const TIME_LIMIT_MS = Number(env("AI_TIME_LIMIT_SEC", "135")) * 1000;
+
+// "10 أجزاء" but "20 جزء": Arabic counts 2–10 with the plural.
+const partsAr = (n: number) => `${n} ${n >= 2 && n <= 10 ? "أجزاء" : "جزء"}`;
 
 const fail = (status: number, error: string, ar: string, en: string, extra: Record<string, unknown> = {}) =>
   json({ ok: false, error, ...m(ar, en), ...extra }, status);
@@ -83,7 +87,7 @@ Deno.serve(async (req) => {
       return fail(429, "busy", "خدمة Gemini المجانية مزدحمة هسه. راح نعيد المحاولة تلقائياً.", "The free Gemini service is busy. Retrying automatically.", { retry_after: 15 });
     }
     // Every call to Gemini counts here (Google's daily quota counts calls), department first so a used-up department
-    // day doesn't also eat into each student's attempts. The student's 20 parts are charged later, once Gemini
+    // day doesn't also eat into each student's attempts. The student's daily parts are charged later, once Gemini
     // actually answers, so the retries after a busy model don't use them up.
     if (!(await rateOk("ai:all", GLOBAL_DAILY, 86400))) {
       return fail(429, "global_limit", "خلص الحد اليومي للقسم كله للترجمة والتلخيص. جرّب باچر.", "The department has used today's limit for translations and summaries. Try again tomorrow.");
@@ -209,7 +213,7 @@ Deno.serve(async (req) => {
               }
               if (!allowed) {
                 ctrl.abort();
-                await send({ type: "error", code: "user_limit", ...m(`خلصت حصتك اليومية (${USER_DAILY} جزء). تكدر تكمل باچر بنفس الوقت تقريباً.`, `You've used today's limit (${USER_DAILY} parts). You can continue tomorrow at about the same time.`) });
+                await send({ type: "error", code: "user_limit", ...m(`خلصت حصتك اليومية (${partsAr(USER_DAILY)}). تكدر تكمل باچر بنفس الوقت تقريباً.`, `You've used today's limit (${USER_DAILY} parts). You can continue tomorrow at about the same time.`) });
                 return;
               }
               writing = true;

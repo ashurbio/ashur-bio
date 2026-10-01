@@ -11,7 +11,9 @@ const HISTORY_MAX = 8;
 // The free Gemini tier is shared by the whole department and is small, so one part at a time.
 const CONCURRENCY = 1;
 // A student's daily allowance (AI_USER_DAILY in the study-ai function); a bigger job could never finish today.
-export const MAX_PARTS = 20;
+export const MAX_PARTS = 10;
+// "10 أجزاء" but "20 جزء": Arabic counts 2–10 with the plural.
+export const partsAr = (n) => `${n} ${n >= 2 && n <= 10 ? 'أجزاء' : 'جزء'}`;
 // How long to keep waiting out a busy free tier for one part before giving up on it. Each retry already tries every
 // Gemini model, and failed calls still count towards Google's small free daily quota, so don't insist for long.
 const MAX_BUSY_WAITS = 6;
@@ -149,7 +151,7 @@ export function planJob(source, options) {
 }
 
 export const tooBigMsg = (n) => b(
-  `هذا الطلب يحتاج ${n} جزء، وحصتك اليومية ${MAX_PARTS} جزء. اختار صفحات أقل أو أنواع أقل.`,
+  `هذا الطلب يحتاج ${partsAr(n)}، وحصتك اليومية ${partsAr(MAX_PARTS)}. اختار صفحات أقل أو أنواع أقل.`,
   `This needs ${n} parts and your daily allowance is ${MAX_PARTS}. Choose fewer pages or fewer types.`,
 );
 

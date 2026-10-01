@@ -282,7 +282,7 @@ with sync_playwright() as p:
     n0 = len(mb.study_calls)
     page.locator(".start-row .btn").click()
     page.wait_for_selector(".job .notice.alert")
-    check("student daily limit: clear Arabic message", "خلصت حصتك اليومية (20 جزء)" in page.inner_text(".job .notice.alert"), page.inner_text(".job .notice.alert").replace("\n", " "))
+    check("student daily limit: clear Arabic message", "خلصت حصتك اليومية (10 أجزاء)" in page.inner_text(".job .notice.alert"), page.inner_text(".job .notice.alert").replace("\n", " "))
     page.wait_for_timeout(1500)
     check("student daily limit: job stops instead of retrying", len(mb.study_calls) == n0 + 1 and page.locator(".job[aria-busy=true]").count() == 0, f"{len(mb.study_calls) - n0} calls")
     page.screenshot(path=str(SHOTS / "s05_limit.png"), full_page=True)
@@ -348,7 +348,7 @@ with sync_playwright() as p:
     page.unroute("**/assets/index-*.js")
     ctx.close()
 
-    # ---------- free Gemini tier: one part at a time, 429 waits and retries, daily quota stops, 20-part cap
+    # ---------- free Gemini tier: one part at a time, 429 waits and retries, daily quota stops, 10-part cap
     COUNT_INFLIGHT = """(() => {
       window.__inflight = 0; window.__maxInflight = 0;
       const orig = window.fetch;
@@ -409,13 +409,24 @@ with sync_playwright() as p:
     open_study(page)
     upload(page, FX / "book.pdf")
     page.locator(".opts-grid .fchip", has_text="ترجمة").click()
-    check("cap: 80 pages translate in exactly 20 parts", "20 جزء" in page.inner_text(".start-row") and page.locator(".start-row .btn").is_enabled(),
+    alert = lambda: page.inner_text(".study [role=alert]").replace("\n", " ") if page.locator(".study [role=alert]").count() else ""
+    check("cap: 80 pages translate = 20 parts, more than the daily 10, can't start", page.locator(".start-row .btn").is_disabled()
+          and "يحتاج 20 جزء، وحصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
+    page.fill("#pg-to", "40")
+    page.wait_for_timeout(200)
+    check("cap: 40 pages translate in exactly 10 parts", "10 أجزاء" in page.inner_text(".start-row") and page.locator(".start-row .btn").is_enabled(),
           page.inner_text(".start-row").replace("\n", " "))
+    page.fill("#pg-to", "44")
+    page.wait_for_timeout(200)
+    check("cap: 44 pages (11 parts) can't start", page.locator(".start-row .btn").is_disabled()
+          and "يحتاج 11 جزء، وحصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
+    page.fill("#pg-to", "40")
     page.locator(".opts-grid .fchip", has_text="تلخيص وأسئلة").click()
     page.locator(".opt-row .link", has_text="الكل").click()
     page.locator(".opts-grid .fchip", has_text="شامل").click()
-    check("cap: a job bigger than the daily 20 parts can't start", page.locator(".start-row .btn").is_disabled()
-          and "حصتك اليومية 20 جزء" in page.inner_text(".study"), page.inner_text(".study [role=alert]").replace("\n", " ") if page.locator(".study [role=alert]").count() else "")
+    page.wait_for_timeout(200)
+    check("cap: every question type, comprehensive, on 40 pages can't start", page.locator(".start-row .btn").is_disabled()
+          and "حصتك اليومية 10 أجزاء" in page.inner_text(".study"), alert())
     ctx.close()
 
     # ---------- desktop

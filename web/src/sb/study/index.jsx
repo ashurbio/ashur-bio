@@ -10,7 +10,7 @@ import { b, Bi, flat, split } from '../bi';
 import { agoBi, lsGet, lsSet } from '../util';
 import { FileError, LIMITS, iso, readFiles, removeImage, textSource } from './files';
 import {
-  useStudy, setSource, setRange, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS, tooBigMsg,
+  useStudy, setSource, setRange, startJob, stopJob, resumeJob, openHistory, deleteHistory, closeJob, sourceFromTranslation, planJob, MAX_PARTS, partsAr, tooBigMsg,
 } from './run';
 import { FORMATS, FORMAT_META, DEPTHS, studyText, translationText } from './data';
 import { Markdown } from './md';
@@ -386,7 +386,7 @@ export default function Study() {
             {opts.task === 'translate' ? <Languages size={17} aria-hidden="true" /> : <Sparkles size={17} aria-hidden="true" />}
             <Bi t={opts.task === 'translate' ? b('ابدأ الترجمة', 'Start translating') : b('ابدأ التلخيص', 'Start')} />
           </button>
-          {source && parts && !tooBig ? <span className="note"><Bi t={b(`راح ينقسم إلى ${parts} ${parts >= 2 && parts <= 10 ? 'أجزاء' : 'جزء'}`, `${parts} part${parts === 1 ? '' : 's'}`)} inline /></span> : null}
+          {source && parts && !tooBig ? <span className="note"><Bi t={b(`راح ينقسم إلى ${partsAr(parts)}`, `${parts} part${parts === 1 ? '' : 's'}`)} inline /></span> : null}
           {!source ? <span className="note"><Bi t={b('اختار ملف أول.', 'Choose a file first.')} inline /></span> : null}
         </div>
         {tooBig ? <p className="form-err" role="alert"><Bi t={tooBigMsg(parts)} /></p> : null}
@@ -414,7 +414,7 @@ export default function Study() {
       ) : null}
 
       <p className="note no-print">
-        <Bi t={b(`الملف يُرسل إلى خدمة Gemini من Google حتى يُعالج، وما ينحفظ بخادم القسم. لأنها الخطة المجانية، Google تكدر تستخدم المحتوى لتحسين خدماتها، فلا ترفع ملفات بيها معلومات شخصية. حصة كل طالب ${MAX_PARTS} جزء باليوم. الذكاء الاصطناعي دقيق بس ممكن يغلط أحياناً، لهذا كل نقطة وسؤال عليه رقم الصفحة حتى تراجعه بالملزمة.`,
+        <Bi t={b(`الملف يُرسل إلى خدمة Gemini من Google حتى يُعالج، وما ينحفظ بخادم القسم. لأنها الخطة المجانية، Google تكدر تستخدم المحتوى لتحسين خدماتها، فلا ترفع ملفات بيها معلومات شخصية. حصة كل طالب ${partsAr(MAX_PARTS)} باليوم. الذكاء الاصطناعي دقيق بس ممكن يغلط أحياناً، لهذا كل نقطة وسؤال عليه رقم الصفحة حتى تراجعه بالملزمة.`,
           `Files are sent to Google's Gemini service for processing and aren't stored on the department's server. Because this is the free tier, Google may use the content to improve its services, so don't upload files with personal information. Each student can process ${MAX_PARTS} parts a day. The AI is accurate but can still make mistakes, so every point and question shows its page number for you to check against the handout.`)} />
       </p>
     </div>
